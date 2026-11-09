@@ -144,7 +144,7 @@ describe('boundary token and fence', () => {
 });
 
 describe('escalation keyword neutralization', () => {
-  const variants = ['/escalate', ' /escalate ', '/ESCALATE', 'a\t/escalate\nb', '/Escalate now', ' /escalate '];
+  const variants = ['/escalate', ' /escalate ', '/ESCALATE', 'a\t/escalate\nb', '/Escalate\u00a0now', '\u2003/escalate\u2003'];
 
   it.each(variants)('defuses %j in the comment, title, selector and text', variant => {
     const request = withSelection({ selector: `x ${variant} y`, textAnchor: { tag: 'h1', text: variant }, landmark: variant });
@@ -189,9 +189,9 @@ describe('url and control character hygiene', () => {
   });
 
   it('escapes control, line-separator and bidi characters in page text', () => {
-    const request = withSelection({ landmark: 'a b‮c\u0007d' });
+    const request = withSelection({ landmark: 'a\u2028b\u202ec\u0007d' });
     const prompt = buildElementPrompt(input({ request }));
-    expect(prompt).not.toMatch(/[ ‮\u0007]/);
+    expect(prompt).not.toMatch(/[\u2028\u202e\u0007]/);
     expect(prompt).toContain('\\u2028');
   });
 

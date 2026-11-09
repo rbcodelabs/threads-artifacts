@@ -13,7 +13,7 @@ import type { ArtifactFeedbackRequest } from './geodeArtifactFeedback';
  * `sha256(prompt)` idempotency key still dedupes it.
  */
 
-export const ZERO_WIDTH_SPACE = '​';
+export const ZERO_WIDTH_SPACE = '\u200b';
 export const MAX_PROMPT_LENGTH = 40_000;
 const DEFAULT_ESCALATION_KEYWORD = '/escalate';
 const MAX_TOKEN_ATTEMPTS = 8;
@@ -71,7 +71,7 @@ const neutralizeUrls = (text: string): string => text.replace(/\b(https?):\/\//g
 /** Slash-commands the host or agent might act on: any whitespace-delimited word that starts with a slash. */
 const neutralizeSlashWords = (text: string): string => text.replace(/(^|\s)\/(?=\S)/g, `$1/${ZERO_WIDTH_SPACE}`);
 
-const INVISIBLE_OR_UNSAFE = /[\u007f-\u009f  ​-‏‪-‮⁦-⁩﻿]/g;
+const INVISIBLE_OR_UNSAFE = /[\u007f-\u009f\u2028\u2029\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g;
 
 function clip(text: string, max: number): { text: string; clipped: boolean } {
   return text.length > max ? { text: `${text.slice(0, max)}…`, clipped: true } : { text, clipped: false };
@@ -88,7 +88,7 @@ const untrusted = (text: string, max: number, keywords: readonly string[]): stri
   neutralizeEscalation(neutralizeSlashWords(neutralizeUrls(quote(text, max))), keywords);
 
 function summaryTitle(title: string, keywords: readonly string[]): string {
-  const cleaned = title.replace(/[\u0000-\u001f\u007f-\u009f  ​-‏‪-‮⁦-⁩﻿`"<>]/g, ' ').replace(/\s+/g, ' ').trim();
+  const cleaned = title.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff`"<>]/g, ' ').replace(/\s+/g, ' ').trim();
   const short = cleaned.length > 60 ? `${cleaned.slice(0, 59)}…` : cleaned;
   return neutralizeEscalation(short || 'Design', keywords);
 }
