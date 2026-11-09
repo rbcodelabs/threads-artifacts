@@ -15,16 +15,24 @@ import type { AgentThreadsApiV1, PublicThreadEvent } from './contracts';
 export const POLL_INTERVAL_MS = 5000;
 export const SETTLE_DELAY_MS = 250;
 const VERIFY_WAIT_MS = 250;
+/** A queued comment older than this is dropped with a notice instead of sending hours later. */
+export const PENDING_TTL_MS = 30 * 60 * 1000;
+/** Upper bound for one submit; a hung host call must not keep every Retry on the same unresolved promise. */
+export const ATTEMPT_TIMEOUT_MS = 20_000;
 
 export const BUSY_MESSAGE = 'A comment is already waiting for the agent. It will send when the current run finishes.';
 const MESSAGES = {
-  conflict: 'This comment clashes with an earlier send. Pick the element again and resend.',
+  conflict: 'This comment clashes with an earlier send. Press Retry; if it keeps failing, pick the element again.',
   invalid: 'Agent Threads would not accept this message (it may be too long). Shorten the comment and try again.',
   gone: 'The thread was deleted, so the comment could not be sent.',
   runFailed: 'The agent could not start this message. Check the thread, then try again.',
   unavailable: 'Agent Threads is not available right now. Try again in a moment.',
   generic: 'Could not send to the thread. Try again.',
   disposed: 'Design is shutting down. Try again once it has reloaded.',
+  statusUnknown: 'Design reloaded while sending. The comment may already have reached the thread; check the thread before retrying.',
+  timedOut: 'Agent Threads did not answer in time. The comment may have been received; check the thread before retrying.',
+  expired: 'Your queued comment waited too long for the agent and was not sent. Send it again.',
+  droppedOnDispose: 'Design reloaded before your queued comment could be sent. Send it again.',
 } as const;
 
 export type SendOutcome =
@@ -55,6 +63,8 @@ export interface SendCoordinatorOptions {
   readonly clock?: CoordinatorClock;
   /** Called when a queued comment finally sends or fails after `submit` already returned `queued`. */
   readonly onDeferredResult?: (result: DeferredSendResult) => void;
+  readonly pendingTtlMs?: number;
+  readonly attemptTimeoutMs?: number;
 }
 
 export interface SendCoordinator {
@@ -82,6 +92,7 @@ function mapSendError(error: unknown): Rejected {
 
 interface Slot extends SendRequest {
   settleTimer: unknown | null;
+  ttlTimer: unknown | null;
   draining: boolean;
 }
 
@@ -97,7 +108,14 @@ export function createSendCoordinator(options: SendCoordinatorOptions): SendCoor
   const { api, ownerPluginId, onDeferredResult } = options;
   const clock = options.clock ?? realClock;
   const slots = new Map<string, Slot>();
-  const inFlight = new Map<string, string>();
+  const inFlight = new Map<string, { selectionId: string; promise: Promise<SendOutcome> }>();
+  const ttlMs = options.pendingTtlMs ?? PENDING_TTL_MS;
+  const attemptTimeoutMs = options.attemptTimeoutMs ?? ATTEMPT_TIMEOUT_MS;
+
+  /** The callback typically shows a Notice; a throwing callback must never break the coordinator or a host subscription. */
+  const notifyDeferred = (result: DeferredSendResult): void => {
+    try { onDeferredResult?.(result); } catch { /* ignore */ }
+  };
   let subscription: { dispose(): void } | null = null;
   let pollTimer: unknown | null = null;
   let disposed = false;
@@ -118,9 +136,10 @@ export function createSendCoordinator(options: SendCoordinatorOptions): SendCoor
   }
 
   /** Sends once. Returns BUSY when the host says the thread is running, so the caller can hold the comment. */
-  async function attempt(request: SendRequest): Promise<SendOutcome | typeof BUSY> {
+  async function attempt(request: SendRequest, issued?: { value: boolean }): Promise<SendOutcome | typeof BUSY> {
     let runId: string;
     try {
+      if (issued) issued.value = true;
       ({ runId } = await api.threads.send(request.threadId, {
         prompt: request.prompt,
         ownerPluginId,
@@ -185,8 +204,9 @@ export function createSendCoordinator(options: SendCoordinatorOptions): SendCoor
   function finish(slot: Slot, outcome: SendOutcome): void {
     if (slots.get(slot.artifactKey) !== slot) return;
     if (slot.settleTimer !== null) { clock.clearTimeout(slot.settleTimer); slot.settleTimer = null; }
+    if (slot.ttlTimer !== null) { clock.clearTimeout(slot.ttlTimer); slot.ttlTimer = null; }
     slots.delete(slot.artifactKey);
-    onDeferredResult?.({ selectionId: slot.selectionId, outcome });
+    notifyDeferred({ selectionId: slot.selectionId, outcome });
     stopWatchingIfIdle();
   }
 
@@ -210,18 +230,14 @@ export function createSendCoordinator(options: SendCoordinatorOptions): SendCoor
   }
 
   function hold(request: SendRequest): SendOutcome {
-    slots.set(request.artifactKey, { ...request, settleTimer: null, draining: false });
+    const slot: Slot = { ...request, settleTimer: null, ttlTimer: null, draining: false };
+    slot.ttlTimer = clock.setTimeout(() => { slot.ttlTimer = null; finish(slot, rejected('unavailable', MESSAGES.expired)); }, ttlMs);
+    slots.set(request.artifactKey, slot);
     watch();
     return { status: 'queued' };
   }
 
-  async function submit(request: SendRequest): Promise<SendOutcome> {
-    if (disposed) return rejected('unavailable', MESSAGES.disposed);
-    const held = slots.get(request.artifactKey);
-    if (held) return held.selectionId === request.selectionId ? { status: 'queued' } : rejected('busy', BUSY_MESSAGE);
-    const running = inFlight.get(request.artifactKey);
-    if (running !== undefined && running !== request.selectionId) return rejected('busy', BUSY_MESSAGE);
-    inFlight.set(request.artifactKey, request.selectionId);
+  async function run(request: SendRequest, issued: { value: boolean }): Promise<SendOutcome> {
     try {
       let state: ThreadState;
       try {
@@ -232,14 +248,34 @@ export function createSendCoordinator(options: SendCoordinatorOptions): SendCoor
       if (disposed) return rejected('unavailable', MESSAGES.disposed);
       if (state === 'missing') return rejected('unavailable', MESSAGES.gone);
       if (state === 'busy') return hold(request);
-      const outcome = await attempt(request);
-      if (disposed) return rejected('unavailable', MESSAGES.disposed);
+      const outcome = await attempt(request, issued);
+      // Contract item 9: once the send was issued it may have reached the host, so do not claim it failed.
+      if (disposed) return rejected('unavailable', issued.value ? MESSAGES.statusUnknown : MESSAGES.disposed);
       return outcome === BUSY ? hold(request) : outcome;
     } catch (error) {
       return mapSendError(error);
-    } finally {
-      if (inFlight.get(request.artifactKey) === request.selectionId) inFlight.delete(request.artifactKey);
     }
+  }
+
+  function withTimeout(promise: Promise<SendOutcome>): Promise<SendOutcome> {
+    return new Promise(resolve => {
+      const timer = clock.setTimeout(() => resolve(rejected('failed', MESSAGES.timedOut)), attemptTimeoutMs);
+      promise.then(outcome => { clock.clearTimeout(timer); resolve(outcome); }, error => { clock.clearTimeout(timer); resolve(mapSendError(error)); });
+    });
+  }
+
+  function submit(request: SendRequest): Promise<SendOutcome> {
+    if (disposed) return Promise.resolve(rejected('unavailable', MESSAGES.disposed));
+    const held = slots.get(request.artifactKey);
+    if (held) return Promise.resolve(held.selectionId === request.selectionId ? { status: 'queued' } : rejected('busy', BUSY_MESSAGE));
+    const running = inFlight.get(request.artifactKey);
+    if (running) return running.selectionId === request.selectionId ? running.promise : Promise.resolve(rejected('busy', BUSY_MESSAGE));
+    const entry = { selectionId: request.selectionId, promise: undefined as unknown as Promise<SendOutcome> };
+    entry.promise = withTimeout(run(request, { value: false })).finally(() => {
+      if (inFlight.get(request.artifactKey) === entry) inFlight.delete(request.artifactKey);
+    });
+    inFlight.set(request.artifactKey, entry);
+    return entry.promise;
   }
 
   return {
@@ -247,11 +283,17 @@ export function createSendCoordinator(options: SendCoordinatorOptions): SendCoor
     get pendingCount() { return slots.size; },
     dispose() {
       disposed = true;
-      for (const slot of slots.values()) if (slot.settleTimer !== null) clock.clearTimeout(slot.settleTimer);
+      const dropped = [...slots.values()];
+      for (const slot of dropped) {
+        if (slot.settleTimer !== null) clock.clearTimeout(slot.settleTimer);
+        if (slot.ttlTimer !== null) clock.clearTimeout(slot.ttlTimer);
+      }
       slots.clear();
       inFlight.clear();
       if (pollTimer !== null) { clock.clearTimeout(pollTimer); pollTimer = null; }
       if (subscription) { subscription.dispose(); subscription = null; }
+      // The user was told "Queued"; make the loss visible instead of silent.
+      for (const slot of dropped) notifyDeferred({ selectionId: slot.selectionId, outcome: rejected('unavailable', MESSAGES.droppedOnDispose) });
     },
   };
 }
