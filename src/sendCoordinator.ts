@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { AgentThreadsApiV1, PublicThreadEvent } from './contracts';
+import { ARTIFACT_FEEDBACK_SUBMIT_TIMEOUT_MS } from './geodeArtifactFeedback';
 
 /**
  * Delivers a finished prompt to a thread through `threads.send` v1 and copes with a busy thread.
@@ -17,8 +18,12 @@ export const SETTLE_DELAY_MS = 250;
 const VERIFY_WAIT_MS = 250;
 /** A queued comment older than this is dropped with a notice instead of sending hours later. */
 export const PENDING_TTL_MS = 30 * 60 * 1000;
-/** Upper bound for one submit; a hung host call must not keep every Retry on the same unresolved promise. */
-export const ATTEMPT_TIMEOUT_MS = 20_000;
+/**
+ * Upper bound for one submit. It must be strictly shorter than Geode's own submit timeout: after Geode gives
+ * up, the user's FIRST Retry must start a fresh attempt (same idempotency key) instead of reattaching to the
+ * still-hung one. Derived from the contract constant so the two cannot drift.
+ */
+export const ATTEMPT_TIMEOUT_MS = Math.max(5000, ARTIFACT_FEEDBACK_SUBMIT_TIMEOUT_MS - 3000);
 
 export const BUSY_MESSAGE = 'A comment is already waiting for the agent. It will send when the current run finishes.';
 const MESSAGES = {
