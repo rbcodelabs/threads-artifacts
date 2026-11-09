@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { ARTIFACT_FEEDBACK_SUBMIT_TIMEOUT_MS } from '../src/geodeArtifactFeedback';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { ATTEMPT_TIMEOUT_MS, createSendCoordinator, idempotencyKeyFor, PENDING_TTL_MS, type DeferredSendResult } from '../src/sendCoordinator';
 import { createFakeApi, FakeApiError } from './helpers/fakeApi';
@@ -382,5 +383,23 @@ describe('hung sends (QB2)', () => {
     release();
     expect(await a).toEqual(await b);
     expect(fake.sends).toHaveLength(1);
+  });
+});
+
+describe('attempt timeout vs Geode's submit timeout', () => {
+  it('is strictly shorter than the host timeout, derived from the contract constant', () => {
+    expect(ATTEMPT_TIMEOUT_MS).toBeLessThan(ARTIFACT_FEEDBACK_SUBMIT_TIMEOUT_MS);
+    expect(ATTEMPT_TIMEOUT_MS).toBeGreaterThanOrEqual(5000);
+  });
+
+  it('lets the first Retry after Geode times out start a fresh send with the same key', async () => {
+    const coordinator = make();
+    fake.state.hangSends = 1;
+    const first = coordinator.submit(req('sel_a', 'same prompt'));
+    await clock.advance(ARTIFACT_FEEDBACK_SUBMIT_TIMEOUT_MS); // Geode gives up here
+    expect(await first).toMatchObject({ status: 'rejected', message: expect.stringContaining('check the thread') });
+    expect(await coordinator.submit(req('sel_a', 'same prompt'))).toEqual({ status: 'sent' });
+    expect(fake.sends).toHaveLength(1);
+    expect(fake.sends[0].idempotencyKey).toBe(idempotencyKeyFor('t1', 'same prompt'));
   });
 });
