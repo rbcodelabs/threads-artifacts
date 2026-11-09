@@ -3,17 +3,19 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { buildDesignManifest } from '../src/designArtifact';
-import { resolveFeedbackTarget } from '../src/feedbackIntake';
+import { STORAGE_UNKNOWN_MESSAGE, resolveFeedbackTarget } from '../src/feedbackIntake';
 import type { ArtifactFeedbackTarget } from '../src/geodeArtifactFeedback';
 import { createFakeApi, FakeApiError } from './helpers/fakeApi';
 
 let base: string;
+let vault: string;
 let allowed: string;
 let fake: ReturnType<typeof createFakeApi>;
 
 beforeEach(async () => {
   base = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'td-intake-')));
-  allowed = path.join(base, '.geode', 'artifacts');
+  vault = path.join(base, 'vault');
+  allowed = path.join(vault, '.geode', 'artifacts');
   await fs.mkdir(allowed, { recursive: true });
   fake = createFakeApi();
 });
@@ -29,7 +31,7 @@ async function makeArtifact(parent = allowed, name = 'design-t1', manifestPatch:
 
 const designRef = (root: string, patch: Record<string, unknown> = {}) => ({ providerId: 'agent-threads.design', kind: 'design-static', schemaVersion: 2, id: 'design-t1', title: 'Landing', data: {}, storageRoot: root, ...patch });
 const target = (root: string, patch: Partial<ArtifactFeedbackTarget> = {}): ArtifactFeedbackTarget => ({ root, artifactId: 'design-t1', title: 'Landing', runtime: 'static', vaultRead: false, ...patch });
-const resolve = (t: ArtifactFeedbackTarget, roots = [allowed]) => resolveFeedbackTarget(t, { api: fake.api, allowedRoots: () => roots });
+const resolve = (t: ArtifactFeedbackTarget, vaultRoot: string | undefined = vault) => resolveFeedbackTarget(t, { api: fake.api, vaultRoot: () => vaultRoot });
 
 describe('resolveFeedbackTarget', () => {
   it('maps a design artifact to its creating thread', async () => {
@@ -39,21 +41,39 @@ describe('resolveFeedbackTarget', () => {
     expect(result).toMatchObject({ ok: true, threadId: 't1', root, title: 'Landing', vaultRead: false });
   });
 
-  it('accepts the visible Artifacts/<namespace> storage too', async () => {
-    const visible = path.join(base, 'Artifacts', 'threads-design');
+  it('accepts a visible folder with a non-default name (the host owns that setting) (R-B2)', async () => {
+    const visible = path.join(vault, 'My Designs', 'threads-design');
     const root = await makeArtifact(visible);
     fake.addThread('t1', { artifacts: [designRef(root) as never] });
-    expect((await resolve(target(root), [allowed, visible])).ok).toBe(true);
+    expect((await resolve(target(root))).ok).toBe(true);
   });
 
-  it('rejects a root outside the host artifact storage', async () => {
+  it('requires the thread artifact to record a storageRoot, with a clear message (R-B2, A1)', async () => {
+    const root = await makeArtifact();
+    fake.addThread('t1', { artifacts: [designRef(root, { storageRoot: undefined }) as never] });
+    expect(await resolve(target(root))).toEqual({ ok: false, reason: 'unsupported', message: STORAGE_UNKNOWN_MESSAGE });
+  });
+
+  it('rejects a recorded storageRoot that lies outside the vault', async () => {
+    const root = await makeArtifact(path.join(base, 'elsewhere'));
+    fake.addThread('t1', { artifacts: [designRef(root) as never] });
+    expect(await resolve(target(root))).toMatchObject({ ok: false, reason: 'unsupported' });
+  });
+
+  it('is unavailable when the vault base path is unknown', async () => {
+    const root = await makeArtifact();
+    fake.addThread('t1', { artifacts: [designRef(root) as never] });
+    expect(await resolve(target(root), undefined)).toMatchObject({ ok: false, reason: 'unavailable' });
+  });
+
+  it('rejects a root outside the vault', async () => {
     const root = await makeArtifact(path.join(base, 'elsewhere'));
     fake.addThread('t1', { artifacts: [designRef(root) as never] });
     expect(await resolve(target(root))).toMatchObject({ ok: false, reason: 'unsupported' });
   });
 
   it('rejects the storage root itself and a symlink that escapes it', async () => {
-    expect(await resolve(target(allowed))).toMatchObject({ ok: false });
+    expect(await resolve(target(vault))).toMatchObject({ ok: false });
     const real = await makeArtifact(path.join(base, 'elsewhere'));
     await fs.symlink(real, path.join(allowed, 'design-link'));
     fake.addThread('t1', { artifacts: [designRef(real) as never] });

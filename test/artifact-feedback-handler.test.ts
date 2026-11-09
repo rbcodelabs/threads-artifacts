@@ -18,6 +18,7 @@ let clock: ReturnType<typeof createFakeClock>;
 let coordinator: SendCoordinator;
 let handler: ArtifactFeedbackHandler;
 const warnings: unknown[] = [];
+let nowMs = 1_000_000;
 
 async function makeArtifact(manifestPatch: Record<string, unknown> = {}): Promise<string> {
   const dir = path.join(base, '.geode', 'artifacts', 'design-t1');
@@ -44,15 +45,36 @@ beforeEach(async () => {
   clock = createFakeClock();
   coordinator = createSendCoordinator({ api: fake.api, ownerPluginId: 'threads-design', clock });
   warnings.length = 0;
-  handler = createArtifactFeedbackHandler({ api: fake.api, coordinator, allowedRoots: () => [path.join(base, '.geode', 'artifacts')], boundarySecret: 'secret', warn: (...args) => { warnings.push(args); } });
+  handler = createArtifactFeedbackHandler({ api: fake.api, coordinator, vaultRoot: () => base, boundarySecret: 'secret', now: () => nowMs, warn: (...args) => { warnings.push(args); } });
 });
 afterEach(async () => { coordinator.dispose(); await fs.rm(base, { recursive: true, force: true }); });
 
 describe('artifact feedback handler', () => {
-  it('declares contract v1 and handles only static artifacts', () => {
+  it('declares contract v1 and handles only Design static artifacts (R-A11)', async () => {
     expect(handler.contractVersion).toBe(1);
-    expect(handler.canHandle!({ root, artifactId: 'x', title: 't', runtime: 'static', vaultRead: false })).toBe(true);
-    expect(handler.canHandle!({ root, artifactId: 'x', title: 't', runtime: 'nextjs' as never, vaultRead: false })).toBe(false);
+    const target = { root, artifactId: 'design-t1', title: 't', runtime: 'static' as const, vaultRead: false };
+    expect(handler.canHandle!(target)).toBe(true);
+    expect(handler.canHandle!({ ...target, runtime: 'nextjs' as never })).toBe(false);
+    expect(handler.canHandle!({ ...target, artifactId: 'someone-elses' })).toBe(false);
+    expect(handler.canHandle!({ ...target, root: 'relative/path' })).toBe(false);
+    expect(handler.canHandle!({ ...target, root: path.join(base, 'missing') })).toBe(false);
+    const other = path.join(base, 'Artifacts', 'other-plugin', 'page');
+    await fs.mkdir(other, { recursive: true });
+    await fs.writeFile(path.join(other, 'artifact.json'), JSON.stringify({ schemaVersion: 1, id: 'page', title: 'x', entry: 'index.html', runtime: 'static' }));
+    expect(handler.canHandle!({ ...target, root: other, artifactId: 'page' })).toBe(false);
+    const outside = path.join(os.tmpdir(), 'td-not-in-vault');
+    expect(handler.canHandle!({ ...target, root: outside })).toBe(false);
+  });
+
+  it('caches the canHandle answer briefly and never throws', async () => {
+    const target = { root, artifactId: 'design-t1', title: 't', runtime: 'static' as const, vaultRead: false };
+    expect(handler.canHandle!(target)).toBe(true);
+    await fs.rm(path.join(root, 'artifact.json'));
+    expect(handler.canHandle!(target)).toBe(true); // cached
+    nowMs += 60_000;
+    expect(handler.canHandle!(target)).toBe(false); // expired, re-read
+    expect(() => handler.canHandle!(null as never)).not.toThrow();
+    expect(handler.canHandle!(null as never)).toBe(false);
   });
 
   it('accepts a valid comment: writes the files, sends a fenced prompt to the owning thread', async () => {
@@ -63,7 +85,7 @@ describe('artifact feedback handler', () => {
     expect(send.threadId).toBe('t1');
     expect(send.ownerPluginId).toBe('threads-design');
     expect(send.idempotencyKey).toMatch(/^design:t1:[0-9a-f]{32}$/);
-    expect(send.prompt.split('\n')[0]).toBe('Design comment on a <h1> element in "Landing" (revision 7).');
+    expect(send.prompt.split('\n')[0]).toBe('Design comment on a <h1> element (revision 7).');
     expect(send.prompt).toContain('Make this heading larger.');
     expect(send.prompt).toContain(path.join(selectionsDir(), `${SELECTION_ID}.png`));
     expect(send.prompt).toContain('index.html:2 [high]');
@@ -175,6 +197,43 @@ describe('artifact feedback handler', () => {
     const result = await submit(request());
     expect(result).toMatchObject({ status: 'rejected' });
     expect(result.status === 'rejected' && result.message).not.toMatch(/boom|\/Users|\/var/);
+  });
+
+  it('lets Retry run after a hung send times out, reusing the same idempotency key (QB2)', async () => {
+    fake.state.hangSends = 1;
+    const first = submit(request());
+    await clock.advance(25_000);
+    expect(await first).toMatchObject({ status: 'rejected' });
+    expect(await submit(request())).toMatchObject({ status: 'accepted' });
+    expect(fake.sends).toHaveLength(1);
+  });
+
+  it('mentions in the status text when a typed escalation keyword was kept as plain text (QB5)', async () => {
+    const req = request() as any;
+    req.comment = 'please /escalate this';
+    const result = await submit(req);
+    expect(result).toMatchObject({ status: 'accepted', message: expect.stringContaining('Sent to the thread.') });
+    expect((result as { message: string }).message).toMatch(/\/escalate|escalation/i);
+    expect((result as { message: string }).message.length).toBeLessThan(200);
+    const plain = request() as any;
+    plain.selection.selectionId = 'sel_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    expect(await submit(plain)).toEqual({ status: 'accepted', message: 'Sent to the thread.' });
+  });
+
+  it('prunes old selection files after a write, keeping the newest 50 (A10)', async () => {
+    await fs.mkdir(selectionsDir(), { recursive: true });
+    const now = Date.now();
+    for (let n = 1; n <= 55; n++) {
+      const file = path.join(selectionsDir(), `sel_${n.toString(16).padStart(32, '0')}.json`);
+      await fs.writeFile(file, '{}');
+      const when = new Date(now - 10_000_000 + n * 1000);
+      await fs.utimes(file, when, when);
+    }
+    await submit(request());
+    const ids = new Set((await fs.readdir(selectionsDir())).filter(name => name.startsWith('sel_')).map(name => name.split('.')[0]));
+    expect(ids.size).toBe(50);
+    expect(ids.has(SELECTION_ID)).toBe(true);
+    expect(ids.has(`sel_${(1).toString(16).padStart(32, '0')}`)).toBe(false);
   });
 
   it('keeps paths and stack traces out of rejected messages', async () => {

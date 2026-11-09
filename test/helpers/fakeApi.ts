@@ -22,7 +22,7 @@ export function createFakeApi(options: FakeApiOptions = {}) {
   const sends: FakeSend[] = [];
   const listeners = new Set<(event: PublicThreadEvent) => void>();
   const sendErrors: unknown[] = [];
-  const state = { subscribeCalls: 0, disposeCalls: 0, waitResult: { status: 'timed_out' } as { status: string; error?: { code?: string; message?: string } }, nextRun: 1 };
+  const state = { hangSends: 0, gate: null as Promise<void> | null, subscribeCalls: 0, disposeCalls: 0, waitResult: { status: 'timed_out' } as { status: string; error?: { code?: string; message?: string } }, nextRun: 1 };
   /** Keys that already produced a run: the real host replays them without re-sending. */
   const seen = new Map<string, { prompt: string; runId: string }>();
 
@@ -49,6 +49,8 @@ export function createFakeApi(options: FakeApiOptions = {}) {
           if (prior.prompt !== input.prompt) throw new FakeApiError('IDEMPOTENCY_CONFLICT');
           return { runId: prior.runId };
         }
+        if (state.hangSends > 0) { state.hangSends--; return new Promise<never>(() => undefined); }
+        if (state.gate) await state.gate;
         const queued = sendErrors.shift();
         if (queued) throw queued;
         if (thread.isRunning) throw new FakeApiError('THREAD_BUSY', 'Thread is already running.');

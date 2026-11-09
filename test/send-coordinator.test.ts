@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { createSendCoordinator, idempotencyKeyFor, type DeferredSendResult } from '../src/sendCoordinator';
+import { ATTEMPT_TIMEOUT_MS, createSendCoordinator, idempotencyKeyFor, PENDING_TTL_MS, type DeferredSendResult } from '../src/sendCoordinator';
 import { createFakeApi, FakeApiError } from './helpers/fakeApi';
 import { createFakeClock } from './helpers/fakeClock';
 
@@ -252,7 +252,7 @@ describe('lifecycle', () => {
     fake.threads.get('t1')!.isRunning = true;
     await coordinator.submit(req('sel_b'));
     expect(fake.state.subscribeCalls).toBe(1);
-    expect(clock.pending).toBe(1); // the backup poll
+    expect(clock.pending).toBe(2); // the backup poll and the slot expiry
     fake.threads.get('t1')!.isRunning = false;
     await clock.advance(5000);
     expect(fake.listenerCount).toBe(0);
@@ -274,5 +274,113 @@ describe('lifecycle', () => {
     expect(fake.sends).toHaveLength(0);
     expect(await coordinator.submit(req('sel_b'))).toMatchObject({ status: 'rejected', reason: 'unavailable' });
     coordinator.dispose(); // idempotent
+  });
+});
+
+describe('conflict wording (QB3)', () => {
+  it('points the user at Retry, which is what the popover offers', async () => {
+    const coordinator = make();
+    fake.sendErrors.push(new FakeApiError('IDEMPOTENCY_CONFLICT'));
+    const outcome = await coordinator.submit(req('sel_a'));
+    expect((outcome as { message: string }).message).toMatch(/Retry/);
+  });
+});
+
+describe('pending slot expiry (A9)', () => {
+  it('drops a queued comment after the TTL with a rejection and frees the slot', async () => {
+    const coordinator = make();
+    fake.threads.get('t1')!.isRunning = true;
+    await coordinator.submit(req('sel_a'));
+    await clock.advance(PENDING_TTL_MS - 1000);
+    expect(coordinator.pendingCount).toBe(1);
+    await clock.advance(2000);
+    expect(coordinator.pendingCount).toBe(0);
+    expect(deferred).toHaveLength(1);
+    expect(deferred[0]).toMatchObject({ selectionId: 'sel_a', outcome: { status: 'rejected', reason: 'unavailable', message: expect.stringContaining('waited too long') } });
+    expect(fake.listenerCount).toBe(0);
+    expect(clock.pending).toBe(0);
+  });
+
+  it('does not fire the expiry for a slot that already sent', async () => {
+    const coordinator = make();
+    fake.threads.get('t1')!.isRunning = true;
+    await coordinator.submit(req('sel_a'));
+    fake.threads.get('t1')!.isRunning = false;
+    await clock.advance(5000);
+    await clock.advance(PENDING_TTL_MS);
+    expect(deferred).toHaveLength(1);
+    expect(deferred[0].outcome).toEqual({ status: 'sent' });
+  });
+});
+
+describe('dispose notices and status-unknown (A9, QB4)', () => {
+  it('reports every dropped queued comment through onDeferredResult when disposed', async () => {
+    const coordinator = make();
+    fake.threads.get('t1')!.isRunning = true;
+    await coordinator.submit(req('sel_a'));
+    coordinator.dispose();
+    expect(deferred).toHaveLength(1);
+    expect(deferred[0]).toMatchObject({ selectionId: 'sel_a', outcome: { status: 'rejected', message: expect.stringContaining('reloaded') } });
+  });
+
+  it('survives an onDeferredResult callback that throws', async () => {
+    fake = createFakeApi();
+    fake.addThread('t1');
+    clock = createFakeClock();
+    const coordinator = createSendCoordinator({ api: fake.api, ownerPluginId: 'threads-design', clock, onDeferredResult: () => { throw new Error('notice failed'); } });
+    fake.threads.get('t1')!.isRunning = true;
+    await coordinator.submit(req('sel_a'));
+    expect(() => fake.emit({ kind: 'thread.removed', threadId: 't1' })).not.toThrow();
+    expect(coordinator.pendingCount).toBe(0);
+    await coordinator.submit(req('sel_b')).catch(() => undefined);
+    expect(() => coordinator.dispose()).not.toThrow();
+  });
+
+  it('does not claim the comment cannot be sent when dispose lands after the send was issued', async () => {
+    const coordinator = make();
+    let release!: () => void;
+    fake.state.gate = new Promise<void>(resolve => { release = resolve; });
+    const pending = coordinator.submit(req('sel_a'));
+    await clock.flush();
+    coordinator.dispose();
+    release();
+    const outcome = await pending;
+    expect(outcome).toMatchObject({ status: 'rejected', reason: 'unavailable' });
+    expect((outcome as { message: string }).message).toMatch(/check the thread/i);
+    expect((outcome as { message: string }).message).not.toMatch(/cannot be sent/i);
+  });
+
+  it('keeps the plain shutting-down message when dispose lands before anything was sent', async () => {
+    const coordinator = make();
+    const pending = coordinator.submit(req('sel_a'));
+    coordinator.dispose();
+    const outcome = await pending;
+    expect((outcome as { message: string }).message).not.toMatch(/check the thread/i);
+    expect(fake.sends).toHaveLength(0);
+  });
+});
+
+describe('hung sends (QB2)', () => {
+  it('times out a never-settling attempt so Retry can start a fresh one with the same key', async () => {
+    const coordinator = make();
+    fake.state.hangSends = 1;
+    const first = coordinator.submit(req('sel_a', 'same prompt'));
+    await clock.advance(ATTEMPT_TIMEOUT_MS + 100);
+    const outcome = await first;
+    expect(outcome).toMatchObject({ status: 'rejected', reason: 'failed', message: expect.stringContaining('check the thread') });
+    expect(await coordinator.submit(req('sel_a', 'same prompt'))).toEqual({ status: 'sent' });
+    expect(fake.sends).toHaveLength(1);
+    expect(clock.pending).toBe(0);
+  });
+
+  it('returns the in-flight promise to a concurrent submit of the same selection', async () => {
+    const coordinator = make();
+    let release!: () => void;
+    fake.state.gate = new Promise<void>(resolve => { release = resolve; });
+    const a = coordinator.submit(req('sel_a'));
+    const b = coordinator.submit(req('sel_a'));
+    release();
+    expect(await a).toEqual(await b);
+    expect(fake.sends).toHaveLength(1);
   });
 });

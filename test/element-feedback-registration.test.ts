@@ -110,6 +110,28 @@ describe('registerElementFeedback', () => {
     expect(fake.listenerCount).toBe(1);
     disposable.dispose();
     expect(fake.listenerCount).toBe(0);
+    expect(opts.notify).toHaveBeenCalledWith(expect.stringMatching(/queued comment.*reloaded/i), true);
+  });
+
+  it('still disposes the coordinator when the registration throws on dispose (A12)', async () => {
+    const root = path.join(base, '.geode', 'artifacts', 'design-t1');
+    await fs.mkdir(root, { recursive: true });
+    await fs.writeFile(path.join(root, 'artifact.json'), JSON.stringify(buildDesignManifest('t1', 'Landing')));
+    const fake = createFakeApi();
+    fake.addThread('t1', { isRunning: true, artifacts: [{ providerId: 'agent-threads.design', kind: 'design-static', schemaVersion: 2, id: 'design-t1', title: 'Landing', data: {}, storageRoot: root }] });
+    const geode = fakeGeode();
+    const original = geode.plugin.registerArtifactFeedbackHandler;
+    geode.plugin.registerArtifactFeedbackHandler = function (this: unknown, handler: ArtifactFeedbackHandler) {
+      const registration = original.call(this, handler);
+      return { ...registration, dispose: () => { throw new Error('boom'); } } as never;
+    };
+    const disposable = registerElementFeedback(options(geode, fake))!;
+    const req = validRequest() as any;
+    req.artifact.root = root;
+    await geode.state.handler!.submit(req, { signal: new AbortController().signal });
+    expect(fake.listenerCount).toBe(1);
+    expect(() => disposable.dispose()).not.toThrow();
+    expect(fake.listenerCount).toBe(0);
   });
 
   it('reads the configured escalation keyword defensively', () => {

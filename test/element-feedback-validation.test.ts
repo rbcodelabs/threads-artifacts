@@ -152,3 +152,83 @@ describe('validateFeedbackRequest', () => {
     invalid(mutated('submittedAt', 'whenever'));
   });
 });
+
+describe('bounded scanning (R-B3)', () => {
+  const timed = (raw: unknown) => {
+    const started = performance.now();
+    const result = validateFeedbackRequest(raw);
+    return { result, ms: performance.now() - started };
+  };
+
+  it('rejects a huge array quickly', () => {
+    const { result, ms } = timed(mutated('selection.selectorAlternates', new Array(1_000_000).fill('a')));
+    expect(result.ok).toBe(false);
+    expect(ms).toBeLessThan(250);
+  });
+
+  it('rejects a sparse array of length ~4e9 without allocating', () => {
+    const sparse: unknown[] = [];
+    sparse.length = 4_294_967_294;
+    for (const path of ['selection.selectorAlternates', 'selection.ancestors', 'selection.a11y.role']) {
+      const { result, ms } = timed(mutated(path, sparse));
+      expect(result.ok, path).toBe(false);
+      expect(ms, path).toBeLessThan(250);
+    }
+  });
+
+  it('rejects arrays over the cap even when the field is otherwise unchecked', () => {
+    expect(timed(mutated('selection.viewport', new Array(65).fill(0))).result.ok).toBe(false);
+  });
+
+  it('rejects objects with an absurd number of keys', () => {
+    const many: Record<string, string> = {};
+    for (let i = 0; i < 5000; i++) many[`k${i}`] = 'v';
+    const { result, ms } = timed(mutated('selection.computedStyles', many));
+    expect(result.ok).toBe(false);
+    expect(ms).toBeLessThan(250);
+  });
+
+  it('rejects deeply nested values', () => {
+    let deep: unknown = 'x';
+    for (let i = 0; i < 50; i++) deep = { a: deep };
+    expect(timed(mutated('selection.viewport', deep)).result.ok).toBe(false);
+  });
+
+  it('enforces the node budget before queuing children', () => {
+    const wide = Array.from({ length: 64 }, () => Array.from({ length: 64 }, () => Array.from({ length: 64 }, () => 1)));
+    const { result, ms } = timed(mutated('selection.viewport', wide));
+    expect(result.ok).toBe(false);
+    expect(ms).toBeLessThan(250);
+  });
+});
+
+describe('redaction re-enforcement (A2)', () => {
+  const redacted = (patch: Record<string, unknown>) => {
+    const raw = validRequest() as any;
+    raw.selection.redacted = true;
+    Object.assign(raw.selection, patch);
+    const result = validateFeedbackRequest(raw);
+    if (!result.ok) throw new Error(result.message);
+    return result.value.selection;
+  };
+
+  it('strips text nodes and elides non-allowlisted attribute values from outerHTML', () => {
+    const selection = redacted({ outerHTML: { html: '<p id="a" class="c d" title="secret" data-note=\'x\' aria-label=y>Secret words<b data-testid="t">more</b> tail</p>', truncated: false } });
+    expect(selection.outerHTML.html).toBe('<p id="a" class="c d" title="..." data-note="..." aria-label="..."><b data-testid="t"></b></p>');
+  });
+
+  it('drops comments and scripts text and keeps the result within the cap', () => {
+    const selection = redacted({ outerHTML: { html: '<div><!-- note --><script>alert(1)</script>hello</div>', truncated: false } });
+    expect(selection.outerHTML.html).not.toMatch(/note|alert|hello/);
+  });
+
+  it('nulls the landmark (heading text can carry vault data)', () => {
+    expect(redacted({ landmark: 'Quarterly layoffs' }).landmark).toBeNull();
+  });
+
+  it('leaves non-redacted selections untouched', () => {
+    const result = validateFeedbackRequest(validRequest());
+    expect(result.ok && result.value.selection.landmark).toBe('Hero');
+    expect(result.ok && result.value.selection.outerHTML.html).toContain('Build faster');
+  });
+});
