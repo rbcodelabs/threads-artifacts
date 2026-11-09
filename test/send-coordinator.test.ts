@@ -386,7 +386,7 @@ describe('hung sends (QB2)', () => {
   });
 });
 
-describe('attempt timeout vs Geode's submit timeout', () => {
+describe('attempt timeout vs the Geode submit timeout', () => {
   it('is strictly shorter than the host timeout, derived from the contract constant', () => {
     expect(ATTEMPT_TIMEOUT_MS).toBeLessThan(ARTIFACT_FEEDBACK_SUBMIT_TIMEOUT_MS);
     expect(ATTEMPT_TIMEOUT_MS).toBeGreaterThanOrEqual(5000);
