@@ -80,10 +80,14 @@ Requirement: a Geode build that implements the artifact feedback contract (versi
 What happens on Send:
 
 - The plugin re-validates the whole payload (schema, size caps, key allowlist) and maps the artifact folder to the thread that created it (`createdByThreadId` in `artifact.json`), rejecting folders outside the host's artifact storage.
-- It writes `.threads-design/selections/<id>.json` (the full payload) and `<id>.png` (an element screenshot) inside the design folder, atomically and without following symlinks. Designs with `permissions.vault: "read"` never get a screenshot.
+- It writes `.threads-design/selections/<id>.json` (the full payload) and `<id>.png` (an element screenshot) inside the design folder, atomically and without following symlinks. Designs with `permissions.vault: "read"` never get a screenshot, and their selections are re-redacted (element text, most attribute values and the landmark are dropped). Only the newest 50 selections per design are kept; older ones are removed.
 - The thread receives a short summary line, your comment, and an element block clearly fenced as untrusted page data with up to five heuristic source hints (file, line, confidence). Page text cannot forge the fence, and the `/escalate` keyword is neutralized so it cannot switch the thread's model.
-- If the agent is busy, one comment per design waits in memory and sends automatically when the run finishes (plugin reload drops it). A second comment while one is waiting is refused until the first has sent.
+- The element title and every other page or manifest value sit inside the fenced block; only your comment is outside it. A `/escalate` (or the configured escalation keyword) typed in your comment is kept as plain text, because the host would otherwise rewrite the whole message, and the status text tells you so.
+- If the agent is busy, one comment per design waits in memory and sends automatically when the run finishes. A second comment while one is waiting is refused until the first has sent. A waiting comment expires after 30 minutes, and a plugin reload drops it with a notice.
 - The agent is told never to edit `.threads-design/`; the plugin owns that folder.
+- A design is only accepted when its thread's artifact record names a storage folder that resolves to the picked folder inside the vault (so a renamed visible artifact folder works).
+
+Known limitations: idempotency is in memory, so if Geode times out a send that did go through and Design is reloaded before you press Retry, the retry can send the comment a second time (the prompt boundary token is per session). The Pick button is offered only for static designs whose `artifact.json` is a Design manifest; the full check happens on Send.
 
 ## Installation
 
