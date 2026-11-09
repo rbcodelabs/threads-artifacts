@@ -20,6 +20,8 @@ const ISO_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2
 const FORBIDDEN_KEYS = ['__proto__', 'constructor', 'prototype'];
 const MAX_NUMBER_MAGNITUDE = 1e6;
 const MAX_SCAN_NODES = 2000;
+const MAX_ARRAY_LENGTH = 64;
+const MAX_OBJECT_KEYS = 256;
 const MAX_SCAN_DEPTH = 8;
 const PRESETS = ['desktop', 'tablet', 'mobile', 'custom', 'fill'] as const;
 const OMITTED_REASONS: readonly ScreenshotOmittedReason[] = ['vault-read', 'too-large', 'capture-failed', 'empty-rect'];
@@ -89,21 +91,79 @@ function rect(value: unknown, name: string): Rect {
   return { x: num(r.x, `${name}.x`), y: num(r.y, `${name}.y`), width: num(r.width, `${name}.width`, { min: 0 }), height: num(r.height, `${name}.height`, { min: 0 }) };
 }
 
-/** Bounded scan for forbidden keys; byte arrays and other views are not traversed. */
+/**
+ * Bounded scan for forbidden keys. Everything is checked BEFORE it is queued or iterated: arrays over
+ * MAX_ARRAY_LENGTH (a sparse array can claim 4e9 slots), objects over MAX_OBJECT_KEYS, depth, and the
+ * total node budget. Byte arrays and other views are not traversed.
+ */
 function assertNoForbiddenKeys(root: unknown): void {
   const stack: { value: unknown; depth: number }[] = [{ value: root, depth: 0 }];
-  let visited = 0;
+  let queued = 1;
   while (stack.length > 0) {
     const { value, depth } = stack.pop()!;
     if (typeof value !== 'object' || value === null || ArrayBuffer.isView(value)) continue;
-    if (++visited > MAX_SCAN_NODES || depth > MAX_SCAN_DEPTH) fail('Request is too deeply nested or too large.');
+    if (depth > MAX_SCAN_DEPTH) fail('Request is too deeply nested.');
+    if (Array.isArray(value) && value.length > MAX_ARRAY_LENGTH) fail('Request contains an array that is too long.');
     const keys = Object.getOwnPropertyNames(value);
+    if (keys.length > MAX_OBJECT_KEYS) fail('Request contains an object with too many keys.');
     for (const key of keys) {
       if (FORBIDDEN_KEYS.includes(key)) fail(`Key "${key}" is not allowed.`);
     }
     const children = Array.isArray(value) ? value : keys.map(key => (value as Record<string, unknown>)[key]);
-    for (const child of children) stack.push({ value: child, depth: depth + 1 });
+    for (const child of children) {
+      if (typeof child !== 'object' || child === null) continue;
+      if (++queued > MAX_SCAN_NODES) fail('Request is too large.');
+      stack.push({ value: child, depth: depth + 1 });
+    }
   }
+}
+
+const REDACTION_KEEP_ATTRIBUTES = new Set(['id', 'class', 'role', 'type', 'data-variation', 'data-testid']);
+const ATTRIBUTE_PATTERN = /([^\s"'<>\/=]+)(?:\s*=\s*("[^"]*"|'[^']*'|[^\s>]+))?/g;
+
+function redactTag(tagText: string): string {
+  const closing = /^<\/\s*([a-zA-Z][\w:-]*)/.exec(tagText);
+  if (closing) return `</${closing[1]}>`;
+  const opening = /^<([a-zA-Z][\w:-]*)/.exec(tagText);
+  if (!opening) return '';
+  const selfClosing = /\/\s*>$/.test(tagText);
+  const rest = tagText.slice(opening[0].length).replace(/\/?\s*>$/, '');
+  const attributes: string[] = [];
+  for (const match of rest.matchAll(ATTRIBUTE_PATTERN)) {
+    const name = match[1];
+    if (match[2] === undefined) { attributes.push(name); continue; }
+    const value = match[2].replace(/^["']|["']$/g, '').replace(/"/g, '&quot;');
+    attributes.push(`${name}="${REDACTION_KEEP_ATTRIBUTES.has(name.toLowerCase()) ? value : '...'}"`);
+  }
+  return `<${opening[1]}${attributes.length ? ` ${attributes.join(' ')}` : ''}${selfClosing ? '/' : ''}>`;
+}
+
+/**
+ * Defense in depth for vault-read artifacts (ADR 0006 redaction): one linear pass that drops text
+ * nodes and comments and elides attribute values except an allowlist. Geode already does this.
+ */
+export function redactOuterHtml(html: string): string {
+  let out = '';
+  let index = 0;
+  while (index < html.length) {
+    const open = html.indexOf('<', index);
+    if (open < 0) break;
+    if (html.startsWith('<!--', open)) {
+      const end = html.indexOf('-->', open + 4);
+      if (end < 0) break;
+      index = end + 3;
+      continue;
+    }
+    let close = open + 1;
+    let quote = '';
+    for (; close < html.length; close++) {
+      const char = html[close];
+      if (quote) { if (char === quote) quote = ''; } else if (char === '"' || char === "'") quote = char; else if (char === '>') break;
+    }
+    out += redactTag(html.slice(open, close + 1));
+    index = close + 1;
+  }
+  return out.slice(0, 4096);
 }
 
 function computedStyles(value: unknown): Record<string, string> {
@@ -160,8 +220,9 @@ function selection(value: unknown, artifactId: string): ElementSelection {
     selectorAlternates: (s.selectorAlternates as unknown[]).map(a => string(a, 'selector alternate', 512)),
     // Redaction invariants are enforced here too: a redacted selection never carries text or a name.
     textAnchor: { tag: tag(anchor.tag, 'textAnchor.tag'), text: redacted ? '' : string(anchor.text, 'textAnchor.text', 80) },
-    landmark: nullableString(s.landmark, 'landmark', 120),
-    outerHTML: { html: string(outer.html, 'outerHTML.html', 4096), truncated: bool(outer.truncated, 'outerHTML.truncated') },
+    // Heading text can carry vault data and ADR 0006 does not list it as redacted, so a redacted selection drops it.
+    landmark: redacted ? (nullableString(s.landmark, 'landmark', 120), null) : nullableString(s.landmark, 'landmark', 120),
+    outerHTML: { html: redacted ? redactOuterHtml(string(outer.html, 'outerHTML.html', 4096)) : string(outer.html, 'outerHTML.html', 4096), truncated: bool(outer.truncated, 'outerHTML.truncated') },
     ancestors: ancestors(s.ancestors),
     computedStyles: computedStyles(s.computedStyles),
     boundingBox: { viewport: rect(box.viewport, 'boundingBox.viewport'), document: rect(box.document, 'boundingBox.document') },
