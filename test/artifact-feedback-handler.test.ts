@@ -1,7 +1,7 @@
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createArtifactFeedbackHandler } from '../src/artifactFeedbackHandler';
 import { buildDesignManifest } from '../src/designArtifact';
 import { NOT_A_DESIGN_MESSAGE } from '../src/feedbackIntake';
@@ -202,6 +202,7 @@ describe('artifact feedback handler', () => {
   it('lets Retry run after a hung send times out, reusing the same idempotency key (QB2)', async () => {
     fake.state.hangSends = 1;
     const first = submit(request());
+    await vi.waitFor(() => expect(clock.pending).toBeGreaterThan(0)); // the attempt timer is armed once intake and file writes are done
     await clock.advance(25_000);
     expect(await first).toMatchObject({ status: 'rejected' });
     expect(await submit(request())).toMatchObject({ status: 'accepted' });

@@ -31,7 +31,7 @@ async function makeArtifact(parent = allowed, name = 'design-t1', manifestPatch:
 
 const designRef = (root: string, patch: Record<string, unknown> = {}) => ({ providerId: 'agent-threads.design', kind: 'design-static', schemaVersion: 2, id: 'design-t1', title: 'Landing', data: {}, storageRoot: root, ...patch });
 const target = (root: string, patch: Partial<ArtifactFeedbackTarget> = {}): ArtifactFeedbackTarget => ({ root, artifactId: 'design-t1', title: 'Landing', runtime: 'static', vaultRead: false, ...patch });
-const resolve = (t: ArtifactFeedbackTarget, vaultRoot: string | undefined = vault) => resolveFeedbackTarget(t, { api: fake.api, vaultRoot: () => vaultRoot });
+const resolve = (t: ArtifactFeedbackTarget, vaultRoot: string = vault) => resolveFeedbackTarget(t, { api: fake.api, vaultRoot: () => vaultRoot });
 
 describe('resolveFeedbackTarget', () => {
   it('maps a design artifact to its creating thread', async () => {
@@ -63,7 +63,7 @@ describe('resolveFeedbackTarget', () => {
   it('is unavailable when the vault base path is unknown', async () => {
     const root = await makeArtifact();
     fake.addThread('t1', { artifacts: [designRef(root) as never] });
-    expect(await resolve(target(root), undefined)).toMatchObject({ ok: false, reason: 'unavailable' });
+    expect(await resolve(target(root), '')).toMatchObject({ ok: false, reason: 'unavailable' });
   });
 
   it('rejects a root outside the vault', async () => {

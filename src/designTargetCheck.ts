@@ -39,6 +39,8 @@ export function createDesignTargetCheck(options: DesignTargetCheckOptions): (tar
   const cache = new Map<string, { value: boolean; at: number }>();
   return target => {
     try {
+      // Cheap structural checks first, so the cache key only has to cover root and artifact id.
+      if (!target || target.runtime !== 'static' || typeof target.root !== 'string' || !path.isAbsolute(target.root)) return false;
       const key = `${target.root}\0${target.artifactId}`;
       const hit = cache.get(key);
       if (hit && now() - hit.at < ttl) return hit.value;
