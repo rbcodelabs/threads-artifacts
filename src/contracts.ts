@@ -24,16 +24,22 @@ export interface StorageAllocationOptions { readonly location?: 'hidden' | 'visi
 export const VISIBLE_STORAGE_CAPABILITY = 'artifacts.visibleStorage';
 export interface AgentToolHost { permissions(): Promise<ThreadPermissionSnapshot | null>; allocateStorage(id: string): Promise<StorageAllocationResult> }
 export interface AgentToolContribution { readonly name: string; readonly description: string; readonly inputSchema: unknown; readonly alwaysLoad?: boolean; readonly requiresApproval?: boolean; invoke(threadId: string, args: Record<string, unknown>, host: AgentToolHost): Promise<{ content: readonly { type: 'text'; text: string }[]; isError?: boolean }> }
+/** The subset of `PublicThreadEvent` this plugin reads. */
+export interface PublicThreadEvent { readonly kind: string; readonly threadId: string; readonly runId?: string }
 export interface ProvisionalThreadHandle { readonly threadId: string; commit(): Promise<unknown>; rollback(): Promise<unknown> }
 export interface AgentThreadsApiV1 {
   readonly apiVersion: 1;
   readonly generation: string;
   readonly capabilities: readonly string[];
   readonly threads: {
-    get(id: string): Promise<{ id: string; cwd?: string; artifacts?: readonly ThreadArtifactRef[] } | null>;
+    get(id: string): Promise<{ id: string; cwd?: string; artifacts?: readonly ThreadArtifactRef[]; /** Present on current Agent Threads builds; absent on older ones. */ isRunning?: boolean } | null>;
     beginProvisional(owner: PeerIdentity, input: { title?: string; agentHarness?: AgentHarness; ownerPluginId?: string }): Promise<ProvisionalThreadHandle>;
     send(id: string, input: { prompt: string; ownerPluginId?: string; idempotencyKey?: string }): Promise<{ runId: string }>;
     open(id: string): Promise<void>;
+    /** Optional: advertised by the `threads.subscribe` capability. */
+    subscribe?(listener: (event: PublicThreadEvent) => void): { dispose(): void };
+    /** Optional: advertised by the `threads.wait` capability. */
+    wait?(runId: string, options?: { timeoutMs?: number }): Promise<{ status: 'completed' | 'failed' | 'timed_out'; error?: { code?: string; message?: string } }>;
     permissions(id: string): Promise<ThreadPermissionSnapshot | null>;
   };
   readonly artifacts: {

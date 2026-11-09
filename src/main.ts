@@ -10,6 +10,7 @@ import { migrateHiddenDesigns } from './designMigration';
 import { captureHostTheme } from './hostTheme';
 import { loadDesignGuidance } from './designGuidance';
 import { createNextjsRuntime, type NextjsRuntime } from './nextjsRuntime';
+import { registerElementFeedback } from './elementFeedbackRegistration';
 
 const REQUIRED_CAPABILITIES = [
   'threads.beginProvisional', 'threads.send', 'threads.open', 'threads.permissions',
@@ -102,7 +103,32 @@ export default class ThreadsDesignPlugin extends Plugin {
     this.service = service;
     this.nextjs = nextjs;
     this.registrations = registrations;
+    this.registerElementComments(api, basePath);
     void this.migrateLegacyDesigns(api);
+  }
+
+  /**
+   * Geode-only element comments. Optional: on Geode builds without the artifact feedback registry (or on
+   * any failure here) this registers nothing and stays silent, and the rest of Design is unaffected.
+   */
+  private registerElementComments(api: AgentThreadsApiV1, basePath: string | undefined): void {
+    try {
+      const feedback = registerElementFeedback({
+        plugin: this,
+        app: this.app,
+        api,
+        basePath,
+        notify: (message, isError) => new Notice(message, isError ? 8000 : undefined),
+        readEscalationKeyword: () => {
+          const host = (this.app as unknown as { plugins?: { plugins?: Record<string, { settings?: { escalationKeyword?: unknown } } | undefined> } }).plugins?.plugins?.['claude-threads'];
+          const keyword = host?.settings?.escalationKeyword;
+          return typeof keyword === 'string' ? keyword : undefined;
+        },
+      });
+      if (feedback) this.registrations.push(feedback);
+    } catch (error) {
+      console.warn('threads-design: element comments are unavailable', error);
+    }
   }
 
   /** Moves pre-existing hidden designs into host-allocated visible storage; failures never affect the plugin. */
