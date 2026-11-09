@@ -71,6 +71,20 @@ Dependencies are not installed per artifact. The pinned set (Next.js 16.4.3) is 
 
 Build failures report the `next build` output tail and the likely cause (server features). The exported pages reference `/_next/...` from the site root, so serve the folder from a web server root (for example `npx serve exports/site`) rather than opening `index.html` from `file://`.
 
+## Element comments (Geode only)
+
+In a static design, Geode's artifact view can offer a **Pick** button: select an element on the page, type a comment, and **Send**. Design turns that into one message in the design's own thread, so the agent edits the right place.
+
+Requirement: a Geode build that implements the artifact feedback contract (version 1, ADR 0006: `Plugin.registerArtifactFeedbackHandler` plus `app.artifactFeedback`). On Geode builds without it, and in Obsidian, Design registers nothing, stays silent, and everything else works as before. Only static (`design-static`) designs created by Design are supported in this release; Next.js designs are not.
+
+What happens on Send:
+
+- The plugin re-validates the whole payload (schema, size caps, key allowlist) and maps the artifact folder to the thread that created it (`createdByThreadId` in `artifact.json`), rejecting folders outside the host's artifact storage.
+- It writes `.threads-design/selections/<id>.json` (the full payload) and `<id>.png` (an element screenshot) inside the design folder, atomically and without following symlinks. Designs with `permissions.vault: "read"` never get a screenshot.
+- The thread receives a short summary line, your comment, and an element block clearly fenced as untrusted page data with up to five heuristic source hints (file, line, confidence). Page text cannot forge the fence, and the `/escalate` keyword is neutralized so it cannot switch the thread's model.
+- If the agent is busy, one comment per design waits in memory and sends automatically when the run finishes (plugin reload drops it). A second comment while one is waiting is refused until the first has sent.
+- The agent is told never to edit `.threads-design/`; the plugin owns that folder.
+
 ## Installation
 
 This repository is private; downloading releases requires repository access.
