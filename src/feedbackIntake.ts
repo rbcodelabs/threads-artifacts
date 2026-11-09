@@ -8,19 +8,20 @@ import type { ArtifactFeedbackTarget } from './geodeArtifactFeedback';
 /**
  * Intake: decide whether a feedback target really is a Design static artifact owned by one of our
  * threads, and which thread. Nothing in the request is trusted for this: the root is resolved with
- * realpath and must sit inside host artifact storage, the manifest on disk names the thread, and
+ * realpath and must sit inside the vault (the exact folder is pinned by the thread's artifact ref), the manifest on disk names the thread, and
  * the thread's own artifact list must still reference the same folder.
  */
 
 const MAX_MANIFEST_BYTES = 64 * 1024;
 export const NOT_A_DESIGN_MESSAGE = 'This artifact was not created by Design, so its comments cannot be sent to a thread.';
+export const STORAGE_UNKNOWN_MESSAGE = 'Agent Threads has no storage location recorded for this design, so its comments cannot be sent to a thread.';
 const THREAD_GONE_MESSAGE = 'The thread that created this design no longer exists.';
 const UNAVAILABLE_MESSAGE = 'Agent Threads is not available right now. Try again in a moment.';
 
 export interface IntakeDeps {
   readonly api: Pick<AgentThreadsApiV1, 'threads' | 'artifacts'>;
-  /** Host artifact storage roots (hidden `.geode/artifacts`, visible `Artifacts/<namespace>`). Evaluated per call. */
-  readonly allowedRoots: () => readonly string[];
+  /** Vault base path. Design storage (hidden or the user's visible folder) must live inside it; the exact folder is pinned by the thread's own artifact ref. */
+  readonly vaultRoot: () => string | undefined;
 }
 
 export type IntakeResult =
@@ -65,8 +66,10 @@ export async function resolveFeedbackTarget(target: ArtifactFeedbackTarget, deps
   const root = await realpathOrNull(target.root);
   if (root === null) return unavailable('The design folder could not be found.');
 
-  const allowed = (await Promise.all(deps.allowedRoots().map(realpathOrNull))).filter((value): value is string => value !== null);
-  if (!allowed.some(parent => isStrictlyInside(root, parent))) return unsupported();
+  const vaultBase = deps.vaultRoot();
+  const vault = vaultBase ? await realpathOrNull(vaultBase) : null;
+  if (vault === null) return unavailable();
+  if (!isStrictlyInside(root, vault)) return unsupported();
 
   const manifest = await readManifest(root);
   if (!manifest || manifest.runtime !== 'static' || manifest.id !== target.artifactId) return unsupported();
@@ -77,7 +80,8 @@ export async function resolveFeedbackTarget(target: ArtifactFeedbackTarget, deps
     const refs = await deps.api.artifacts.list(manifest.createdByThreadId);
     const ref = refs.find(candidate => candidate.kind === DESIGN_ARTIFACT_KIND && candidate.id === manifest.id);
     if (!ref) return unsupported();
-    if (ref.storageRoot !== undefined && (await realpathOrNull(ref.storageRoot)) !== root) return unsupported();
+    if (!ref.storageRoot) return { ok: false, reason: 'unsupported', message: STORAGE_UNKNOWN_MESSAGE };
+    if ((await realpathOrNull(ref.storageRoot)) !== root) return unsupported();
   } catch {
     return unavailable();
   }

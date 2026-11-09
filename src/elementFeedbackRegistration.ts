@@ -1,5 +1,4 @@
 import { randomBytes } from 'node:crypto';
-import * as path from 'node:path';
 import type { AgentThreadsApiV1 } from './contracts';
 import { createArtifactFeedbackHandler } from './artifactFeedbackHandler';
 import {
@@ -64,15 +63,16 @@ export function registerElementFeedback(options: ElementFeedbackOptions): Dispos
   const handler = createArtifactFeedbackHandler({
     api: options.api,
     coordinator,
-    allowedRoots: () => [path.join(options.basePath as string, '.geode', 'artifacts'), path.join(options.basePath as string, 'Artifacts', 'threads-design')],
+    vaultRoot: () => options.basePath,
     boundarySecret: options.secret ?? randomBytes(32).toString('hex'),
-    escalationKeywords: () => {
+    escalation: () => {
       try {
         const keyword = options.readEscalationKeyword?.();
-        return typeof keyword === 'string' && keyword.trim() ? [keyword] : [];
+        if (typeof keyword === 'string' && keyword.trim()) return { keywords: [keyword], known: true };
       } catch {
-        return [];
+        // fall through: unknown keyword means conservative defusing
       }
+      return { keywords: [], known: false };
     },
     warn: (message, error) => log.warn(message, error),
   });
@@ -91,5 +91,15 @@ export function registerElementFeedback(options: ElementFeedbackOptions): Dispos
     coordinator.dispose();
     return null;
   }
-  return { dispose: () => { registration.dispose(); coordinator.dispose(); } };
+  return {
+    dispose: () => {
+      try {
+        registration.dispose();
+      } catch (error) {
+        log.warn('threads-design: disposing the artifact feedback registration failed', error);
+      } finally {
+        coordinator.dispose();
+      }
+    },
+  };
 }

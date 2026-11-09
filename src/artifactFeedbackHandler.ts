@@ -1,9 +1,10 @@
 import type { AgentThreadsApiV1 } from './contracts';
-import { buildElementPrompt, PromptTooLargeError } from './elementPrompt';
+import { createDesignTargetCheck } from './designTargetCheck';
+import { buildElementPrompt, neutralizeEscalation, PromptTooLargeError } from './elementPrompt';
 import { validateFeedbackRequest } from './elementFeedbackValidation';
 import { resolveFeedbackTarget } from './feedbackIntake';
 import type { ArtifactFeedbackHandler, ArtifactFeedbackRequest, ArtifactFeedbackResult } from './geodeArtifactFeedback';
-import { writeSelectionFiles } from './selectionFiles';
+import { pruneSelections, SELECTION_RETENTION, writeSelectionFiles } from './selectionFiles';
 import type { SendCoordinator } from './sendCoordinator';
 import { findSourceHints } from './sourceHints';
 
@@ -17,6 +18,7 @@ import { findSourceHints } from './sourceHints';
 const LEDGER_SIZE = 64;
 const SENT_MESSAGE = 'Sent to the thread.';
 const QUEUED_MESSAGE = 'Queued. It will send when the agent finishes.';
+const ESCALATION_NOTE = 'The escalation keyword in your comment was kept as plain text and will not switch the model.';
 const MESSAGES = {
   cancelled: 'Cancelled before it was sent.',
   files: 'Could not save the selection. Check disk space and folder permissions, then try again.',
@@ -28,11 +30,13 @@ const MESSAGES = {
 export interface ArtifactFeedbackHandlerDeps {
   readonly api: AgentThreadsApiV1;
   readonly coordinator: SendCoordinator;
-  /** Host artifact storage roots a Design artifact may live under. */
-  readonly allowedRoots: () => readonly string[];
+  /** Vault base path; Design storage must live inside it and is pinned by the thread's artifact ref. */
+  readonly vaultRoot: () => string | undefined;
   /** Per-session secret for the prompt boundary token. Never page-visible. */
   readonly boundarySecret: string;
-  readonly escalationKeywords?: () => readonly string[];
+  /** The host's escalation keyword(s); `known: false` when the setting could not be read. */
+  readonly escalation?: () => { readonly keywords: readonly string[]; readonly known: boolean };
+  readonly now?: () => number;
   readonly warn?: (message: string, error?: unknown) => void;
 }
 
@@ -40,6 +44,7 @@ const rejected = (reason: Extract<ArtifactFeedbackResult, { status: 'rejected' }
 
 export function createArtifactFeedbackHandler(deps: ArtifactFeedbackHandlerDeps): ArtifactFeedbackHandler {
   const ledger = new Map<string, Promise<ArtifactFeedbackResult>>();
+  const isDesignTarget = createDesignTargetCheck({ vaultRoot: deps.vaultRoot, now: deps.now });
 
   function remember(selectionId: string, result: Promise<ArtifactFeedbackResult>): void {
     ledger.delete(selectionId);
@@ -51,7 +56,7 @@ export function createArtifactFeedbackHandler(deps: ArtifactFeedbackHandlerDeps)
 
   async function process(request: ArtifactFeedbackRequest, signal: AbortSignal): Promise<ArtifactFeedbackResult> {
     const { selection } = request;
-    const intake = await resolveFeedbackTarget(request.artifact, { api: deps.api, allowedRoots: deps.allowedRoots });
+    const intake = await resolveFeedbackTarget(request.artifact, { api: deps.api, vaultRoot: deps.vaultRoot });
     if (!intake.ok) return rejected(intake.reason, intake.message);
     if (intake.vaultRead && !selection.redacted) return rejected('invalid', MESSAGES.notRedacted);
     if (signal.aborted) return rejected('unavailable', MESSAGES.cancelled);
@@ -82,8 +87,11 @@ export function createArtifactFeedbackHandler(deps: ArtifactFeedbackHandlerDeps)
       deps.warn?.('threads-design: could not write selection files', error);
       return rejected('failed', MESSAGES.files);
     }
+    // Retention is best-effort and never throws; the file just written is protected.
+    await pruneSelections({ root: intake.root, keep: SELECTION_RETENTION, protectId: selection.selectionId });
     if (signal.aborted) return rejected('unavailable', MESSAGES.cancelled);
 
+    const escalation = deps.escalation?.() ?? { keywords: [], known: true };
     let prompt: string;
     try {
       prompt = buildElementPrompt({
@@ -93,7 +101,8 @@ export function createArtifactFeedbackHandler(deps: ArtifactFeedbackHandlerDeps)
         pngPath: files.pngPath,
         hints,
         boundarySecret: deps.boundarySecret,
-        escalationKeywords: deps.escalationKeywords?.(),
+        escalationKeywords: escalation.keywords,
+        conservativeKeywords: !escalation.known,
       });
     } catch (error) {
       if (error instanceof PromptTooLargeError) return rejected('invalid', MESSAGES.tooLarge);
@@ -103,14 +112,16 @@ export function createArtifactFeedbackHandler(deps: ArtifactFeedbackHandlerDeps)
 
     // Past this point the send may be issued: finish the bookkeeping even if the signal aborts.
     const outcome = await deps.coordinator.submit({ selectionId: selection.selectionId, artifactKey: intake.root, threadId: intake.threadId, prompt });
-    if (outcome.status === 'sent') return { status: 'accepted', message: SENT_MESSAGE };
-    if (outcome.status === 'queued') return { status: 'accepted', message: QUEUED_MESSAGE };
+    // A typed escalation keyword is kept as plain text (rewriting would flatten the fence): say so.
+    const note = neutralizeEscalation(request.comment, escalation.keywords) !== request.comment ? ` ${ESCALATION_NOTE}` : '';
+    if (outcome.status === 'sent') return { status: 'accepted', message: `${SENT_MESSAGE}${note}` };
+    if (outcome.status === 'queued') return { status: 'accepted', message: `${QUEUED_MESSAGE}${note}` };
     return rejected(outcome.reason, outcome.message);
   }
 
   return {
     contractVersion: 1,
-    canHandle: target => target.runtime === 'static',
+    canHandle: target => isDesignTarget(target),
     submit(raw, context) {
       const validated = validateFeedbackRequest(raw);
       if (!validated.ok) return Promise.resolve(rejected('invalid', `This comment could not be sent: ${validated.message}`));
