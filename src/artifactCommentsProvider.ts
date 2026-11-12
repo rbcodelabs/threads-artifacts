@@ -200,7 +200,7 @@ export function createArtifactCommentsProvider(deps: CommentsProviderDeps): Comm
         });
         if (result.status !== 'ok') {
           // Nothing references the files we just wrote: do not leave them behind.
-          if (!files.replay) await removeSelectionFiles(intake.root, selection.selectionId);
+          
           return result;
         }
         await pruneAround(handle, intake.root, selection.selectionId);
