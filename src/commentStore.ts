@@ -111,7 +111,7 @@ export interface CommentRootHandle {
   remove(input: RemoveCommentInput): Promise<ArtifactCommentsResult<{ readonly id: string }>>;
   adopt(ids: readonly string[]): Promise<ArtifactCommentsResult<{ readonly adopted: readonly string[] }>>;
   /** Plugin-raised transitions for the send flow (P2b), applied atomically: all or nothing. */
-  transition(items: readonly SystemTransition[]): Promise<ArtifactCommentsResult<{ readonly comments: readonly ArtifactComment[] }>>;
+  transition(items: readonly SystemTransition[]): Promise<ArtifactCommentsResult<{ readonly comments: readonly ArtifactComment[]; readonly stale: readonly string[] }>>;
   /** Selection ids of every stored comment: pass to `pruneSelections` as `protectIds`. */
   protectedSelectionIds(): Promise<string[]>;
   /** At most 8 live listeners; null at the cap. A single stat poll runs while at least one exists. */
@@ -446,7 +446,12 @@ export function createCommentStore(options: CommentStoreOptions): CommentStore {
       }
       const prev = await this.readPrev();
       if (prev !== null) {
-        return { health: 'recovered', notice: clip(`Design restored ${prev.comments.length} comment(s) from the previous copy. The damaged file was saved as ${name}.`), file: prev, probe, fileSig, diskValid: false };
+        // The previous generation is older: keep every valid comment that is still readable in the damaged file too.
+        const merged = mergeBodies(prev, this.salvageFile(text), now().getTime());
+        const comments = merged.comments.slice(0, MAX_COMMENTS);
+        const newer = comments.length - prev.comments.length;
+        const kept = newer > 0 ? ` and kept ${newer} newer comment(s) from the damaged file` : '';
+        return { health: 'recovered', notice: clip(`Design restored ${prev.comments.length} comment(s) from the previous copy${kept}. The damaged file was saved as ${name}.`), file: { ...prev, comments, tombstones: merged.tombstones, nextOrdinal: merged.nextOrdinal }, probe, fileSig, diskValid: false };
       }
       const salvaged = this.salvageFile(text);
       const count = salvaged.comments.length;
@@ -769,7 +774,8 @@ export function createCommentStore(options: CommentStoreOptions): CommentStore {
         if (this.state.file.comments.length >= MAX_COMMENTS) return rejected('limit', 'Resolve or delete older comments to add more.');
         const key = await this.ensureKey();
         const comment = createStoredComment(draft, { ordinal: this.state.file.nextOrdinal, now: nowIso(), key, artifactId: this.artifactId });
-        const body: CommentsBody = { comments: [...this.state.file.comments, comment], tombstones: this.state.file.tombstones, nextOrdinal: comment.ordinal + 1 };
+        // Re-pinning an id that was deleted: its tombstone must go, or a reload at the same instant would drop it again.
+        const body: CommentsBody = { comments: [...this.state.file.comments, comment], tombstones: this.state.file.tombstones.filter((t) => t.id !== comment.id), nextOrdinal: comment.ordinal + 1 };
         const result = await this.persist(body, [comment.id], 'local');
         if (result.status !== 'ok') return result;
         const final = this.finalComment(comment.id);
@@ -863,7 +869,7 @@ export function createCommentStore(options: CommentStoreOptions): CommentStore {
       });
     }
 
-    async transition(items: readonly SystemTransition[]): Promise<ArtifactCommentsResult<{ readonly comments: readonly ArtifactComment[] }>> {
+    async transition(items: readonly SystemTransition[]): Promise<ArtifactCommentsResult<{ readonly comments: readonly ArtifactComment[]; readonly stale: readonly string[] }>> {
       if (!Array.isArray(items) || items.length === 0 || items.length > ARTIFACT_COMMENTS_CAPS.maxComments) return rejected('invalid', 'Those changes are not valid.');
       const seen = new Set<string>();
       for (const item of items) {
@@ -877,18 +883,27 @@ export function createCommentStore(options: CommentStoreOptions): CommentStore {
         if (blocked) return blocked;
         let comments = this.state.file.comments;
         const at = nowIso();
+        const stale: string[] = [];
+        const appliedIds: string[] = [];
         for (const item of items) {
           const found = comments.find((c) => c.id === item.id);
           if (!found) return rejected('not-found', 'That comment no longer exists.');
           if ((item.event === 'batch-issued' || item.event === 'batch-resend') && this.provenanceOf(found) !== 'local') return rejected('foreign', 'Adopt this comment before sending it.');
+          // A result that belongs to a different batch request than the one that issued this comment is stale: skip it, not the others.
+          if ((item.event === 'delivered' || item.event === 'send-failed' || item.event === 'expired') && (item.requestId ?? null) !== (found.send.lastBatchRequestId ?? null)) {
+            stale.push(item.id);
+            continue;
+          }
           const next = applyEvent(found, item.event, { now: at, requestId: item.requestId ?? null, message: item.message ?? null });
           if (next === null) return rejected('invalid-transition', 'That change is not allowed for a comment in this state.');
           comments = this.replace(comments, next);
+          appliedIds.push(item.id);
         }
+        if (appliedIds.length === 0) return accepted({ comments: [], stale });
         const issuing = items.every((i) => i.event === 'batch-issued' || i.event === 'batch-resend');
-        const result = await this.persist({ ...this.bodyOf(), comments }, items.map((i) => i.id), issuing ? 'local' : 'send-result');
+        const result = await this.persist({ ...this.bodyOf(), comments }, appliedIds, issuing ? 'local' : 'send-result');
         if (result.status !== 'ok') return result;
-        return accepted({ comments: items.map((i) => this.finalComment(i.id)).filter((c): c is ArtifactComment => c !== null) });
+        return accepted({ comments: appliedIds.map((id) => this.finalComment(id)).filter((c): c is ArtifactComment => c !== null), stale });
       });
     }
 
