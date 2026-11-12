@@ -252,7 +252,7 @@ export function createArtifactCommentsProvider(deps: CommentsProviderDeps): Comm
         },
         /** Attaches to the store once the provider is active. A subscription made earlier waits for activation. */
         attach() {
-          if (started || cancelled || !active) return;
+          if (started || cancelled) return;
           started = true;
           void (async () => {
             try {
