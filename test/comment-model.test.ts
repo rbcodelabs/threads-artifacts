@@ -489,6 +489,7 @@ describe('normalizeCommentsFile', () => {
     const file = JSON.parse(JSON.stringify(fileOf([stored(1), stored(2)], { tombstones: [{ id: cmtId(1), at: NOW }] })));
     const result = normalizeCommentsFile(file, NOW_MS);
     expect(result.ok && result.file.comments.map((c) => c.id)).toEqual([cmtId(2)]);
+    expect(result.ok && result.report).toMatchObject({ dropped: 1, needsQuarantine: true });
   });
 });
 
