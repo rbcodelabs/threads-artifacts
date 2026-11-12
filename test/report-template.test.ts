@@ -102,7 +102,10 @@ describe('report chart library', () => {
     const t2 = ticks(bars({ series: [{ name: 's', values: [2] }] }));
     expect(new Set(t2).size).toBe(t2.length);
     expect(t2).toEqual(expect.arrayContaining(['0.0', '0.5', '1.0', '1.5', '2.0']));
-    expect(ticks(bars({ series: [{ name: 's', values: [-1, 1] }] })).join(' ')).not.toContain('-0');
+    const mixed = ticks(bars({ series: [{ name: 's', values: [-1, 1] }] }));
+    expect(mixed).not.toContain('-0.0');
+    expect(mixed).not.toContain('-0');
+    expect(mixed).toContain('0.0');
     expect(api.format(-0, {}, false)).toBe('0');
     expect(api.format(-0.0001, {}, false)).toBe('0');
   });
