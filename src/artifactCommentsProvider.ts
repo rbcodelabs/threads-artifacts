@@ -335,7 +335,7 @@ export function createArtifactCommentsProvider(deps: CommentsProviderDeps): Comm
     activate() {
       if (disposed) return;
       active = true;
-      for (const subscription of [...subscriptions]) subscription.attach();
+
     },
     async protectedSelectionIds(root, artifactId) {
       if (!active) return null;
