@@ -561,10 +561,25 @@ export function createCommentStore(options: CommentStoreOptions): CommentStore {
       const probe = await this.probe();
       if (probe === this.state.probe && this.state.health !== 'unavailable') return;
       const before = this.state;
+      // The sidecar directory appearing next to an absent comments.json (our own selection files created it) changes
+      // nothing a caller can see: adopt the new probe without a reload or an "external" event.
+      if (before.probe === 'nodir' && before.health === 'ok' && before.fileSig === 'missing' && before.file.comments.length === 0 && /^dir:[^|]*\|missing$/.test(probe) && (await this.sidecarHoldsNoComments())) {
+        this.state = { ...before, probe };
+        return;
+      }
       this.state = await this.loadState(probe);
       if (probe === before.probe && before.health === this.state.health) return;
       this.revision += 1;
       this.queueChange(this.state.health === 'recovered' ? 'recovered' : 'external', 'all');
+    }
+
+    /** True when the sidecar directory has no comments.* file at all (not even a previous generation to recover from). */
+    private async sidecarHoldsNoComments(): Promise<boolean> {
+      try {
+        return !(await ops.readdir(this.dir)).some((name) => name.startsWith('comments.'));
+      } catch {
+        return false;
+      }
     }
 
     private queueChange(reason: ArtifactCommentsChangeReason, ids: readonly string[] | 'all'): void {

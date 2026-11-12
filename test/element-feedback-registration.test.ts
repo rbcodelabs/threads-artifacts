@@ -289,7 +289,7 @@ describe('registerElementFeedback negotiation matrix', () => {
     fake.addThread('t1', { artifacts: [{ providerId: 'agent-threads.design', kind: 'design-static', schemaVersion: 2, id: 'design-t1', title: 'Landing', data: {}, storageRoot: root }] });
     const geode = negotiatingGeode([1, 2]);
     const { guard, data } = guardFor({ someSetting: 1 });
-    const disposable = registerElementFeedback(opts(geode, { api: fake.api, installKeys: guard }))!;
+    const disposable = registerElementFeedback(opts(geode, { api: fake.api, installKeys: guard, now: () => Date.parse('2026-11-08T20:01:00.000Z') }))!;
     const handler = geode.calls[0].handler;
     const target = { root, artifactId: 'design-t1', title: 'Landing', runtime: 'static', vaultRead: false };
     const req = validRequest() as any;
