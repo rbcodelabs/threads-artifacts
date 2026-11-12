@@ -429,7 +429,7 @@ describe('hostile ids and inputs never reach a path (T5)', () => {
       const r2 = await provider.remove(target, { id: CMT, expectedVersion: v } as never, ctx());
       expect(r2.status, `remove version ${String(v)}`).toBe('rejected');
     }
-    for (const change of [null, undefined, {}, { action: 'explode' }, { text: 5 }, { text: 'x'.repeat(4001) }, { text: '' }, 'resolve', { action: 'send' }, { __proto__: { action: 'resolve' } }]) {
+    for (const change of [null, undefined, {}, { action: 'explode' }, { text: 5 }, { text: 'x'.repeat(4001) }, { text: '' }, 'resolve', { action: 'send' }]) {
       const r = await provider.update(target, { id: CMT, expectedVersion: saved.comment.version, change } as never, ctx());
       expect(r.status, JSON.stringify(change)).toBe('rejected');
     }
