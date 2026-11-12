@@ -237,6 +237,40 @@ describe('artifact feedback handler', () => {
     expect(ids.has(`sel_${(1).toString(16).padStart(32, '0')}`)).toBe(false);
   });
 
+  it('never prunes selection files that a pinned comment references (protectedSelectionIds)', async () => {
+    await fs.mkdir(selectionsDir(), { recursive: true });
+    const now = Date.now();
+    const pinned = `sel_${(1).toString(16).padStart(32, '0')}`;
+    for (let n = 1; n <= 55; n++) {
+      const file = path.join(selectionsDir(), `sel_${n.toString(16).padStart(32, '0')}.json`);
+      await fs.writeFile(file, '{}');
+      const when = new Date(now - 10_000_000 + n * 1000);
+      await fs.utimes(file, when, when);
+    }
+    const protecting = createArtifactFeedbackHandler({ api: fake.api, coordinator, vaultRoot: () => base, boundarySecret: 'secret', now: () => nowMs, protectedSelectionIds: async () => [pinned] });
+    await protecting.submit(request(), { signal: signal() });
+    const names = new Set((await fs.readdir(selectionsDir())).map(name => name.split('.')[0]));
+    expect(names.has(pinned)).toBe(true);
+    // 55 files, one exempt: 54 compete for 50 slots, plus the new one is protected.
+    expect([...names].filter(id => id.startsWith('sel_')).length).toBe(51);
+  });
+
+  it('skips pruning entirely when the protected list cannot be determined (null or throws)', async () => {
+    await fs.mkdir(selectionsDir(), { recursive: true });
+    const now = Date.now();
+    for (let n = 1; n <= 55; n++) {
+      const file = path.join(selectionsDir(), `sel_${n.toString(16).padStart(32, '0')}.json`);
+      await fs.writeFile(file, '{}');
+      const when = new Date(now - 10_000_000 + n * 1000);
+      await fs.utimes(file, when, when);
+    }
+    for (const unknown of [async () => null, async () => { throw new Error('store unavailable'); }]) {
+      const guarded = createArtifactFeedbackHandler({ api: fake.api, coordinator, vaultRoot: () => base, boundarySecret: 'secret', now: () => nowMs, protectedSelectionIds: unknown });
+      await guarded.submit(request(), { signal: signal() });
+      expect((await fs.readdir(selectionsDir())).filter(name => name.endsWith('.json')).length).toBe(56);
+    }
+  });
+
   it('keeps paths and stack traces out of rejected messages', async () => {
     const bad = request() as any;
     bad.artifact.root = path.join(base, 'nope');
