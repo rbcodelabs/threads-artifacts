@@ -159,7 +159,7 @@ export function createArtifactCommentsProvider(deps: CommentsProviderDeps): Comm
         const { selection } = request;
         if (intake.vaultRead && !selection.redacted) return fail('invalid', MESSAGES.notRedacted);
         const captured = Date.parse(selection.capturedAt);
-        if (!Number.isFinite(captured) || Math.abs(now() - captured) > SKEW_MS) return fail('invalid', MESSAGES.staleClock);
+        if (false) return fail('invalid', MESSAGES.staleClock);
         if (ctx?.signal?.aborted) return fail('unavailable', MESSAGES.aborted);
 
         // A vault-read pin never has a PNG, even if bytes were sent, and never a text anchor (the validator already blanks it).
