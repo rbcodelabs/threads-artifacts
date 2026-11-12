@@ -4,6 +4,7 @@ import { buildElementPrompt, neutralizeEscalation, PromptTooLargeError } from '.
 import { validateFeedbackRequest } from './elementFeedbackValidation';
 import { resolveFeedbackTarget } from './feedbackIntake';
 import type { ArtifactFeedbackHandler, ArtifactFeedbackRequest, ArtifactFeedbackResult } from './geodeArtifactFeedback';
+import { serializeSelectionRecord } from './selectionRecord';
 import { pruneSelections, SELECTION_RETENTION, writeSelectionFiles } from './selectionFiles';
 import type { SendCoordinator } from './sendCoordinator';
 import { findSourceHints } from './sourceHints';
@@ -36,6 +37,11 @@ export interface ArtifactFeedbackHandlerDeps {
   readonly boundarySecret: string;
   /** The host's escalation keyword(s); `known: false` when the setting could not be read. */
   readonly escalation?: () => { readonly keywords: readonly string[]; readonly known: boolean };
+  /**
+   * Selection ids that retention must never delete (every pinned comment's selection). `null`, or a throw, means
+   * "could not tell": pruning is skipped. Omitted means no comments exist (nothing extra to protect).
+   */
+  readonly protectedSelectionIds?: (root: string, artifactId: string) => Promise<readonly string[] | null>;
   readonly now?: () => number;
   readonly warn?: (message: string, error?: unknown) => void;
 }
@@ -54,6 +60,16 @@ export function createArtifactFeedbackHandler(deps: ArtifactFeedbackHandlerDeps)
     void result.then(outcome => { if (outcome.status !== 'accepted' && ledger.get(selectionId) === result) ledger.delete(selectionId); }, () => ledger.delete(selectionId));
   }
 
+  async function protectedIdsFor(root: string, artifactId: string): Promise<readonly string[] | null> {
+    if (!deps.protectedSelectionIds) return [];
+    try {
+      return await deps.protectedSelectionIds(root, artifactId);
+    } catch (error) {
+      deps.warn?.('threads-design: could not list pinned selections; skipping retention', error);
+      return null;
+    }
+  }
+
   async function process(request: ArtifactFeedbackRequest, signal: AbortSignal): Promise<ArtifactFeedbackResult> {
     const { selection } = request;
     const intake = await resolveFeedbackTarget(request.artifact, { api: deps.api, vaultRoot: deps.vaultRoot });
@@ -63,23 +79,12 @@ export function createArtifactFeedbackHandler(deps: ArtifactFeedbackHandlerDeps)
 
     const hints = await findSourceHints(intake.root, selection).catch(() => []);
     const png = request.screenshot && !intake.vaultRead ? request.screenshot.bytes : null;
-    const screenshotOmitted = png ? null : request.screenshot ? 'vault-read' : request.screenshotOmitted;
     let files;
     try {
       files = await writeSelectionFiles({
         root: intake.root,
         selectionId: selection.selectionId,
-        json: `${JSON.stringify({
-          schemaVersion: 1,
-          contractVersion: 1,
-          artifact: { artifactId: request.artifact.artifactId, title: intake.title, runtime: 'static', vaultRead: intake.vaultRead },
-          comment: request.comment,
-          selection,
-          screenshot: png && request.screenshot ? { file: `${selection.selectionId}.png`, width: request.screenshot.width, height: request.screenshot.height, cssRect: request.screenshot.cssRect, devicePixelRatio: request.screenshot.devicePixelRatio, downscaled: request.screenshot.downscaled } : null,
-          screenshotOmitted,
-          stale: request.stale,
-          submittedAt: request.submittedAt,
-        }, null, 2)}\n`,
+        json: serializeSelectionRecord({ request, title: intake.title, vaultRead: intake.vaultRead, png, contractVersion: 1 }),
         png,
         vaultRead: intake.vaultRead,
       });
@@ -88,7 +93,9 @@ export function createArtifactFeedbackHandler(deps: ArtifactFeedbackHandlerDeps)
       return rejected('failed', MESSAGES.files);
     }
     // Retention is best-effort and never throws; the file just written is protected.
-    await pruneSelections({ root: intake.root, keep: SELECTION_RETENTION, protectId: selection.selectionId });
+    // Selections that a pinned comment references are exempt. If they cannot be determined, nothing is pruned.
+    const protectIds = await protectedIdsFor(intake.root, intake.manifest.id);
+    if (protectIds !== null) await pruneSelections({ root: intake.root, keep: SELECTION_RETENTION, protectId: selection.selectionId, protectIds });
     if (signal.aborted) return rejected('unavailable', MESSAGES.cancelled);
 
     const escalation = deps.escalation?.() ?? { keywords: [], known: true };

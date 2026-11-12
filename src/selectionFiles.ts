@@ -211,3 +211,59 @@ export async function pruneSelections(input: PruneInput, ops: FsOps = defaultOps
   }
   return { removed };
 }
+
+const MAX_SELECTION_JSON_BYTES = 256 * 1024;
+const SELECTION_READ_FLAGS = nodeFs.constants.O_RDONLY | ((nodeFs.constants as unknown as Record<string, number | undefined>).O_NOFOLLOW ?? 0);
+
+/** Verified `.threads-design/selections` directory for a root, or null when anything about it is not a plain real directory. */
+async function verifiedSelectionsDir(ops: FsOps, root: string): Promise<string | null> {
+  if (!path.isAbsolute(root)) return null;
+  const rootReal = await ops.realpath(root);
+  const selections = path.join(rootReal, SIDECAR_DIR, SELECTIONS_DIR);
+  for (const dir of [path.join(rootReal, SIDECAR_DIR), selections]) {
+    const stat = await lstatOrNull(ops, dir);
+    if (stat === null || stat.isSymbolicLink() || !stat.isDirectory() || (await ops.realpath(dir)) !== dir) return null;
+  }
+  return selections;
+}
+
+/**
+ * Reads `selections/<id>.json` as text, or null when it is missing, oversize, not a regular single-link
+ * file, a symlink, or anything else unexpected. Never follows links. The caller validates the content.
+ */
+export async function readSelectionJson(root: string, selectionId: string, ops: FsOps = defaultOps): Promise<string | null> {
+  try {
+    if (!SELECTION_ID_PATTERN.test(selectionId)) return null;
+    const dir = await verifiedSelectionsDir(ops, root);
+    if (dir === null) return null;
+    const file = path.join(dir, `${selectionId}.json`);
+    const before = await lstatOrNull(ops, file);
+    if (before === null || before.isSymbolicLink() || !before.isFile() || before.nlink > 1 || before.size > MAX_SELECTION_JSON_BYTES) return null;
+    const handle = await ops.open(file, SELECTION_READ_FLAGS);
+    try {
+      const stat = await handle.stat();
+      if (!stat.isFile() || stat.nlink > 1 || stat.size > MAX_SELECTION_JSON_BYTES || (before.ino && stat.ino && before.ino !== stat.ino)) return null;
+      return (await handle.readFile({ encoding: 'utf8' }));
+    } finally {
+      await handle.close().catch(() => undefined);
+    }
+  } catch {
+    return null;
+  }
+}
+
+/** Best-effort removal of one selection's own json and png (ids matched against the exact pattern, directory re-verified). */
+export async function removeSelectionFiles(root: string, selectionId: string, ops: FsOps = defaultOps): Promise<void> {
+  try {
+    if (!SELECTION_ID_PATTERN.test(selectionId)) return;
+    const dir = await verifiedSelectionsDir(ops, root);
+    if (dir === null) return;
+    for (const ext of ['json', 'png']) {
+      const file = path.join(dir, `${selectionId}.${ext}`);
+      const stat = await lstatOrNull(ops, file);
+      if (stat !== null && stat.isFile() && !stat.isSymbolicLink()) await ops.rm(file, { force: true });
+    }
+  } catch {
+    // Retention will collect leftovers.
+  }
+}

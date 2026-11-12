@@ -11,6 +11,7 @@ import { captureHostTheme } from './hostTheme';
 import { loadDesignGuidance } from './designGuidance';
 import { createNextjsRuntime, type NextjsRuntime } from './nextjsRuntime';
 import { registerElementFeedback } from './elementFeedbackRegistration';
+import { createPluginDataGuard, type PluginDataGuard } from './commentKey';
 
 const REQUIRED_CAPABILITIES = [
   'threads.beginProvisional', 'threads.send', 'threads.open', 'threads.permissions',
@@ -25,6 +26,8 @@ export default class ThreadsDesignPlugin extends Plugin {
   private startupNoticeTimer: ReturnType<typeof setTimeout> | null = null;
   private service: DesignService | null = null;
   private nextjs: NextjsRuntime | null = null;
+  /** The only door to plugin data (loadData/saveData): it owns the comment-signing key, so nothing else may call them. */
+  private readonly pluginData: PluginDataGuard = createPluginDataGuard({ loadData: this.loadData.bind(this), saveData: this.saveData.bind(this) });
 
   async onload(): Promise<void> {
     const workspace = this.app.workspace as unknown as {
@@ -118,6 +121,8 @@ export default class ThreadsDesignPlugin extends Plugin {
         app: this.app,
         api,
         basePath,
+        installKeys: this.pluginData,
+        pluginVersion: this.manifest.version,
         notify: (message, isError) => new Notice(message, isError ? 8000 : undefined),
         readEscalationKeyword: () => {
           const host = (this.app as unknown as { plugins?: { plugins?: Record<string, { settings?: { escalationKeyword?: unknown } } | undefined> } }).plugins?.plugins?.['claude-threads'];
