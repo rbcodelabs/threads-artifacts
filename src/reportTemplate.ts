@@ -357,7 +357,7 @@ export const REPORT_JS = `/* Dependency-free SVG charts for report mode. Reads w
       return '<p class="chart-error">Chart "' + esc(id) + '" is missing or invalid in data.js (type must be stacked-bar, grouped-bar or line, with categories and series).</p>';
     }
     var series = seriesOf(spec);
-    var legend = '<ul class="legend">' + series.map(function (s) { return '<li class="s' + s.slot + '" data-series="' + esc(s.name) + '"><span class="swatch" data-series="' + esc(s.name) + '" role="img" aria-label="' + esc(s.name) + ' legend color"></span>' + esc(s.name) + '</li>'; }).join('') + '</ul>';
+    var legend = '<ul class="legend">' + series.map(function (s) { return '<li class="s' + s.slot + '" data-series="' + esc(s.name) + '"><span class="swatch" data-series="' + esc(s.name) + '" aria-hidden="true"></span>' + esc(s.name) + '</li>'; }).join('') + '</ul>';
     var caption = '<figcaption><strong>' + esc(spec.title || '') + '</strong>' + (spec.caption ? '<span>' + esc(spec.caption) + '</span>' : '') + '</figcaption>';
     var scroller = '<div class="chart-scroll" tabindex="0" role="region" aria-label="' + esc('Chart: ' + (spec.title || id)) + '">' + renderChartSvg(spec, id) + '</div>';
     return caption + legend + scroller + renderTable(spec, series);
