@@ -300,8 +300,7 @@ export function createArtifactCommentsProvider(deps: CommentsProviderDeps): Comm
    * or the id is listed as pinned (another request may have won the race, or a v1 Send record owns them).
    */
   async function cleanUpOwnFiles(handle: CommentRootHandle, root: string, selectionId: string, files: { createdJson: boolean; createdPng: boolean }): Promise<void> {
-    if (!files.createdJson && !files.createdPng) return;
-    let remove = { json: files.createdJson, png: files.createdPng };
+    let remove = { json: true, png: true };
     try {
       const existing = await handle.get(`cmt_${selectionId.slice(4)}`);
       if (existing.status === 'ok') {
