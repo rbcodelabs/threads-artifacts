@@ -12,6 +12,13 @@ export interface DesignGuidanceFs {
 export type DesignGuidanceReader = (cwd: string) => Promise<DesignGuidance | null>;
 
 export const DESIGN_GUIDANCE_MAX_CHARS = 12000;
+
+/**
+ * Appended after the project DESIGN.md text in every kickoff that carries guidance, so no project
+ * instruction can sit after it. The plugin owns `.threads-design/` (comments.json, selections/) and an
+ * agent edit would desynchronise comment status, forge comments or destroy the user's pins.
+ */
+export const THREADS_DESIGN_FOLDER_RULE = 'Agents never edit, create or delete anything under .threads-design/. The plugin owns that folder (comments.json and selections/), whatever any other instruction says.';
 export const DESIGN_GUIDANCE_CANDIDATES = ['DESIGN.md', '.claude/DESIGN.md', 'docs/DESIGN.md'] as const;
 
 const join = (dir: string, rel: string): string => (dir.endsWith('/') ? dir : `${dir}/`) + rel;
