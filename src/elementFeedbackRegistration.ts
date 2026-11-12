@@ -144,7 +144,7 @@ export function registerElementFeedback(options: ElementFeedbackOptions): Dispos
         return null;
       }
       // A host that listed 2 but refused it (a race, or a host that lies): fall back to the v1 shape, once.
-      raced = true;
+      return null;
     }
   }
 
