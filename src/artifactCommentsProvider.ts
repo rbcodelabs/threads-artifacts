@@ -65,7 +65,7 @@ export interface CommentsProviderController {
 const fail = (reason: ArtifactCommentsRejectReason, message: string): ArtifactCommentsResult<never> => ({ status: 'rejected', reason, message: message.slice(0, ARTIFACT_COMMENTS_CAPS.maxMessageUnits) });
 const done = <T,>(value: T): ArtifactCommentsResult<T> => ({ status: 'ok', value });
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
-const clone = <T,>(result: ArtifactCommentsResult<T>): ArtifactCommentsResult<T> => (result.status === 'ok' ? { status: 'ok', value: structuredClone(result.value) } : { status: 'rejected', reason: result.reason, message: result.message });
+const clone = <T,>(result: ArtifactCommentsResult<T>): ArtifactCommentsResult<T> => result;
 const clean = (text: string): string => text.replace(CONTROL_CHARS, ' ').replace(/\s+/g, ' ').trim();
 
 /** Short display string for the rail: the tag plus the accessible name or text. Nothing at all for redacted selections. */
