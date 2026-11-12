@@ -193,7 +193,8 @@ describe('A5: tombstones and timestamps', () => {
     const r1 = normalizeCommentsFile(asComment, NOW_MS);
     expect(r1.ok && r1.file.comments.map((c) => c.id)).toEqual([cmtId(1)]);
     const created = JSON.parse(JSON.stringify(fileOf([stored(1, { createdAt: bad })])));
-    expect(normalizeCommentsFile(created, NOW_MS).ok && (normalizeCommentsFile(created, NOW_MS) as { file: { comments: unknown[] } }).file.comments).toHaveLength(0);
+    const r2 = normalizeCommentsFile(created, NOW_MS);
+    expect(r2.ok && r2.file.comments).toHaveLength(0);
     const tomb = JSON.parse(JSON.stringify(fileOf([stored(1)], { tombstones: [{ id: cmtId(5), at: bad }] })));
     const r3 = normalizeCommentsFile(tomb, NOW_MS);
     expect(r3.ok && r3.report.tombstonesDropped).toBe(1);
