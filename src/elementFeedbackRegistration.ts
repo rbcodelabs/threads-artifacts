@@ -60,6 +60,8 @@ export interface ElementFeedbackOptions {
   readonly installKeys?: InstallKeyProvider;
   /** Recorded in comments.json as `writtenBy`. */
   readonly pluginVersion?: string;
+  /** Wall clock in ms (tests). Used to bound how old or new a pinned selection may claim to be. */
+  readonly now?: () => number;
 }
 
 /**
@@ -121,7 +123,7 @@ export function registerElementFeedback(options: ElementFeedbackOptions): Dispos
     // The store is lazy and the provider stays inert until Geode accepts this handler (T12): nothing here reads
     // plugin data or writes comments.json before a v2 registration succeeded.
     const store = createCommentStore({ keys: options.installKeys, pluginVersion: options.pluginVersion ? `threads-design@${options.pluginVersion}` : undefined });
-    const candidate = createArtifactCommentsProvider({ api: options.api, vaultRoot, store, warn: baseDeps.warn });
+    const candidate = createArtifactCommentsProvider({ api: options.api, vaultRoot, store, now: options.now, warn: baseDeps.warn });
     const v1 = createArtifactFeedbackHandler({ ...baseDeps, protectedSelectionIds: (root, artifactId) => candidate.protectedSelectionIds(root, artifactId) });
     const v2: ArtifactFeedbackHandlerV2 = { contractVersion: 2, canHandle: v1.canHandle, submit: v1.submit, comments: candidate.provider };
     const attempt = register(v2);
