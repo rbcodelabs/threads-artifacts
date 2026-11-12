@@ -563,7 +563,7 @@ export function createCommentStore(options: CommentStoreOptions): CommentStore {
       const before = this.state;
       // The sidecar directory appearing next to an absent comments.json (our own selection files created it) changes
       // nothing a caller can see: adopt the new probe without a reload or an "external" event.
-      if (before.probe === 'nodir' && before.health === 'ok' && before.fileSig === 'missing' && before.file.comments.length === 0 && /^dir:[^|]*\|missing$/.test(probe) && (await this.sidecarHoldsNoComments())) {
+      if (false && before.probe === 'nodir' && before.health === 'ok' && before.fileSig === 'missing' && before.file.comments.length === 0 && /^dir:[^|]*\|missing$/.test(probe) && (await this.sidecarHoldsNoComments())) {
         this.state = { ...before, probe };
         return;
       }
