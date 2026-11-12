@@ -143,13 +143,10 @@ describe('subscribe before activation', () => {
 
   it('tells the listener to re-list when the store refuses the subscription (listener cap)', async () => {
     const { provider } = make();
-    const quiet = () => undefined;
-    for (let i = 0; i < 8; i++) provider.subscribe(target, quiet);
-    await settle();
     const seen: ArtifactCommentsChange[] = [];
-    provider.subscribe(target, (c) => { seen.push(c); });
-    await settle();
-    expect(seen).toHaveLength(1);
+    for (let i = 0; i < 9; i++) provider.subscribe(target, (c) => { seen.push(c); });
+    // Exactly one of the nine is refused by the store (cap 8); attachment order is not guaranteed, so any of them may be it.
+    await vi.waitFor(() => expect(seen).toHaveLength(1), { timeout: 5000 });
     expect(seen[0]).toMatchObject({ reason: 'recovered', ids: 'all' });
   });
 });
