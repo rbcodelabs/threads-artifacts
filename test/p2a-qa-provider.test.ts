@@ -606,3 +606,32 @@ describe('PNG for pins on ordinary artifacts', () => {
     expect(exists(path.join(selectionsDir(), `${SELECTION_ID}.png`))).toBe(false);
   });
 });
+
+describe('provider retention when the store cannot list pinned selections', () => {
+  it('a pin saved while protectedSelectionIds fails prunes nothing (strays beyond the retention window stay)', async () => {
+    controller.dispose();
+    const real = createCommentStore({ keys: { getKey: async () => KEY }, now: () => new Date(NOW_MS) });
+    const failing: CommentStore = {
+      ...real,
+      open: async (input: any) => {
+        const handle = await real.open(input);
+        return new Proxy(handle, {
+          get(h: any, prop) {
+            if (prop === 'protectedSelectionIds') return async () => { throw new Error('store says no'); };
+            return typeof h[prop] === 'function' ? h[prop].bind(h) : h[prop];
+          },
+        });
+      },
+    } as CommentStore;
+    build({ store: failing, retention: 1 });
+    await fs.mkdir(selectionsDir(), { recursive: true });
+    const strays = [1, 2, 3, 4].map((n) => `sel_${(0xa0 + n).toString(16).padStart(32, '0')}`);
+    for (const id of strays) {
+      await fs.writeFile(path.join(selectionsDir(), `${id}.json`), '{}');
+      const old = new Date(NOW_MS - 10 * HOUR);
+      await fs.utimes(path.join(selectionsDir(), `${id}.json`), old, old);
+    }
+    ok(await provider.save(target, { request: request() }, ctx()));
+    for (const id of strays) expect(exists(path.join(selectionsDir(), `${id}.json`)), id).toBe(true);
+  });
+});
