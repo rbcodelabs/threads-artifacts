@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createDesignAgentTool } from '../src/designAgentTool';
 import type { DesignService } from '../src/DesignService';
+import { DESIGN_TOOL_DESCRIPTION } from '../src/designAgentTool';
 import { DESIGN_MODES, DESIGN_MODE_DESCRIPTIONS } from '../src/designModes';
 
 function fixture() {
@@ -12,11 +13,21 @@ function fixture() {
 }
 
 describe('EnterDesignMode agent tool', () => {
+  it('steers reports, analyses and charts to the local report mode instead of cloud doc connectors', () => {
+    const { tool } = fixture();
+    expect(tool.description).toBe(DESIGN_TOOL_DESCRIPTION);
+    expect(DESIGN_TOOL_DESCRIPTION.startsWith('Use mode "report" whenever the user asks for a report, analysis, summary document or charts')).toBe(true);
+    expect(DESIGN_TOOL_DESCRIPTION).toContain('Claude Docs, Google Docs');
+    expect(DESIGN_TOOL_DESCRIPTION).toContain('nothing is uploaded');
+    expect(DESIGN_TOOL_DESCRIPTION).toContain('Modes variations, pick, spec, storyboard and report are static-only');
+  });
+
   it('declares an optional mode enum alongside the required brief', () => {
     const { tool } = fixture();
     const schema = tool.inputSchema as { properties: Record<string, { enum?: string[]; description?: string }>; required: string[] };
     expect(schema.required).toEqual(['brief']);
-    expect(schema.properties.mode.enum).toEqual(['wireframe', 'states', 'variations', 'pick', 'spec', 'storyboard']);
+    expect(schema.properties.mode.enum).toEqual(['wireframe', 'states', 'variations', 'pick', 'spec', 'storyboard', 'report']);
+    expect(schema.properties.mode.description).toMatch(/report/);
     expect(schema.properties.mode.description).toMatch(/variations/);
     expect(schema.properties.mode.description).toMatch(/pick/);
     expect(schema.properties.mode.description).toMatch(/wireframe/);
@@ -40,7 +51,7 @@ describe('EnterDesignMode agent tool', () => {
     expect(service.prepare).toHaveBeenCalledWith('thread-1', 'Pricing page', { mode: undefined });
   });
 
-  it.each(['wireframe', 'states', 'variations', 'storyboard'] as const)('passes mode %s through to prepare', async mode => {
+  it.each(['wireframe', 'states', 'variations', 'storyboard', 'report'] as const)('passes mode %s through to prepare', async mode => {
     const { tool, service, host } = fixture();
     await tool.invoke('thread-1', { brief: 'Pricing page', mode }, host);
     expect(service.prepare).toHaveBeenCalledWith('thread-1', 'Pricing page', { mode });

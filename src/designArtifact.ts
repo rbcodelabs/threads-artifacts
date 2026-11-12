@@ -21,6 +21,7 @@ import {
 import { normalizeHostTheme, type HostThemeSnapshot } from './hostTheme';
 import { parseDesignModeArgs, type DesignMode } from './designModes';
 import type { DesignGuidance } from './designGuidance';
+import { REPORT_JS, reportCss, reportDataJs, reportHtml } from './reportTemplate';
 
 export { DESIGN_ARTIFACT_SCHEMA_VERSION };
 
@@ -210,6 +211,15 @@ export async function applyModeViewport(root: string, mode: DesignMode, fileFs: 
   await fileFs.writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 }
 
+/**
+ * The chart library and data file for report mode. Also written when report mode runs against an
+ * existing static design, where index.html and styles.css are left for the agent to rebuild.
+ */
+export async function scaffoldReportSupport(fileFs: DesignArtifactFs, root: string): Promise<void> {
+  await writeIfMissing(fileFs, path.join(root, 'report.js'), REPORT_JS);
+  await writeIfMissing(fileFs, path.join(root, 'data.js'), reportDataJs());
+}
+
 /** Source files only; `node_modules` is linked from the shared template install by the toolchain. */
 async function scaffoldNextjsFiles(fileFs: DesignArtifactFs, root: string, artifactId: string): Promise<void> {
   await fileFs.mkdir(path.join(root, 'app'), { recursive: true });
@@ -233,12 +243,17 @@ export async function scaffoldDesignArtifact(
   fileFs: DesignArtifactFs = defaultFs,
   theme: HostThemeSnapshot = normalizeHostTheme('dark', {}),
   runtime: DesignRuntime = 'static',
+  mode?: DesignMode,
 ): Promise<DesignArtifact> {
   const manifest = buildDesignManifest(threadId, brief, runtime);
   await fileFs.mkdir(root, { recursive: true });
   await writeIfMissing(fileFs, path.join(root, 'artifact.json'), `${JSON.stringify(manifest, null, 2)}\n`);
   if (runtime === 'nextjs') {
     await scaffoldNextjsFiles(fileFs, root, manifest.id);
+  } else if (mode === 'report') {
+    await writeIfMissing(fileFs, path.join(root, 'index.html'), reportHtml());
+    await writeIfMissing(fileFs, path.join(root, 'styles.css'), reportCss(theme));
+    await scaffoldReportSupport(fileFs, root);
   } else {
     await writeIfMissing(fileFs, path.join(root, 'index.html'), scaffoldHtml());
     await writeIfMissing(fileFs, path.join(root, 'styles.css'), scaffoldCss(theme));
@@ -325,6 +340,17 @@ ${MODE_OVERRIDE}
 - Also write storyboard.md at the artifact root: a markdown shot list derived from storyboard.json (frame number, caption, notes, and the flow or video fields). Regenerate it whenever you change storyboard.json, including on re-runs.
 - If the artifact already contains a design, reuse its look and content for the frame visuals unless the brief says otherwise. Honor any DESIGN.md guidance, and every artifact rule below still applies.
 - The board replaces the content of index.html and must stay usable at narrow widths (the grid wraps to fewer columns).`,
+  report: `Mode: report
+${MODE_OVERRIDE}
+- This is a document, not an app screen. Build a readable report page: title and byline, a short summary first (the answer and the key numbers), a contents list, then sections, then assumptions and caveats. Write real prose with specific figures; never lorem ipsum.
+- The artifact folder already contains the report scaffold: index.html (document layout), styles.css (theme tokens, prose, print rules), report.js (a dependency-free SVG chart library) and data.js (sets window.REPORT_DATA). Keep this structure. Do not add app.js, a framework, a charting package or a remote script.
+- Put every chart's numbers in data.js under REPORT_DATA.charts.<key> as { type, title, caption, categories, series: [{ name, values }], format: { prefix, suffix, decimals } }. type is "stacked-bar", "grouped-bar" or "line". In index.html place <figure class="chart" data-chart="<key>"></figure> where the chart belongs; report.js draws it with a legend, axes, hover tooltips and a data table beneath. REPORT_DATA also carries title, subtitle and byline, shown in the elements marked data-report-field. The artifact CSP is connect-src 'none', so fetch cannot read data; load data.js with a script tag before report.js, as the scaffold does. No inline script.
+- Follow every chart with one or two sentences saying what it shows and why it matters. Use the data table beneath each chart as the accessible fallback; do not remove it. Do not rely on color alone: keep the legend and table.
+- Replace the placeholder sections, sample charts and the sample data in data.js with the real content. Keep the report self-contained and readable on desktop, mobile, in light and dark themes and in print.
+- Keep all data local. Do not send any of it to a cloud document, spreadsheet or chart service or any other connector (for example Claude Docs or Google Docs), and do not call the network. The report lives only in this artifact folder in the vault.
+- Follow-up requests ("show X vs Y", "change the assumption") are edits to this same report: change data.js and the relevant section of index.html in place. Never scaffold a second document or folder, and do not rewrite parts the request does not touch.
+- If this thread's design was not created in report mode, index.html and styles.css are your design as it stands and only report.js and data.js were added. Rebuild index.html as the report document described above, loading data.js then report.js, and add styles for the report classes (.chart, .legend, .swatch, .chart-svg, .s0 to .s7 and the --c0 to --c7 colors) to styles.css.
+- Final step, after the report is finished: add a link to this report under the "## Claude Sessions" heading in today's daily note, Daily/YYYY-MM-DD.md (use the vault's daily-notes folder and today's local date). Create the note or heading if missing. Link to index.html in this artifact folder by its vault-relative path with the report title as the link text. If a link to this report is already there, update it in place; never add a duplicate, including on later edits.`,
 };
 
 const DESIGN_FILE_LOOKUP_BULLET = '- Before designing, check your working directory (and its parents up to the repo root) for DESIGN.md, .claude/DESIGN.md, or docs/DESIGN.md. If one exists, read it and treat it as authoritative project design guidance: stay within its colors, type, spacing, radii and component styles, and for variations differ only in layout, flow, hierarchy and interaction. An explicit brief that asks for a new look still wins.';
@@ -407,5 +433,5 @@ Start now. Edit the files directly, check the preview, and report what you chang
 /** Mode instructions are written for the static runtime; this maps their file names onto a Next.js app. */
 const NEXTJS_MODE_NOTE = 'Next.js runtime: wherever the mode instructions name index.html, styles.css or app.js, use the app/ equivalents (app/page.tsx, app/globals.css, client components); the viewport and artifact.json stay untouched.';
 
-/** Modes whose output depends on static multi-file snapshots, inline-script-free overlays or JSON mirrors. */
-export const NEXTJS_UNSUPPORTED_MODES: readonly DesignMode[] = ['variations', 'pick', 'spec', 'storyboard'];
+/** Modes whose output depends on static multi-file snapshots, inline-script-free overlays, JSON mirrors or the report chart library. */
+export const NEXTJS_UNSUPPORTED_MODES: readonly DesignMode[] = ['variations', 'pick', 'spec', 'storyboard', 'report'];

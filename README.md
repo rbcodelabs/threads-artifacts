@@ -36,8 +36,24 @@ A mode changes the instructions for one design turn. It does not create a new ar
 - `/design pick: B` promotes direction B to the root page and builds it out fully. Notes may follow the letter, for example `/design pick: B, but use A's navigation`. The `variations/` folder is kept, so you can pick again. Pick only works in a thread that already has a design. It cannot start a new thread.
 - `/design spec: the pricing page` adds a toggleable redline overlay to the existing design without changing it. Press `S` or click the floating "Show spec" button to reveal spacing, type, and color-token annotations, in both the desktop and mobile layouts. Spec only works in a thread that already has a design; it cannot start a new thread.
 - `/design storyboard: the signup flow` (or a video brief) builds an ordered frame board that the agent infers is a product flow or a video. Frames live in `storyboard.json` (mirrored to `storyboard.js`, since the artifact CSP blocks fetch) and render as a numbered grid with captions and notes. Flows add trigger and branch labels between frames. Videos add duration, shot, and voiceover plus a total runtime. Reorder frames by drag or arrow keys and edit captions inline; those edits are page-only and are not saved. A `storyboard.md` shot list is written alongside and regenerated on re-run. It can start a new thread.
+- `/design report: quarterly revenue analysis` builds a local, document-style HTML report with a summary first, a contents list, prose sections, assumptions, and SVG charts (stacked bar, grouped bar, line) that each have a legend, hover tooltips, and a data table beneath as the accessible fallback. It can start a new thread. See [Report mode](#report-mode).
 
-The colon is required, so `/design states of the union dashboard` is an ordinary brief. In a thread that already has a design, a bare `/design wireframe:`, `/design states:`, `/design variations:`, `/design spec:`, or `/design storyboard:` runs that mode against the existing design. `EnterDesignMode` accepts the same modes through its optional `mode` argument. In an Agent Threads host version that supports argument-completion suggestions, typing `/design ` offers the mode keywords as autocomplete.
+The colon is required, so `/design states of the union dashboard` is an ordinary brief. In a thread that already has a design, a bare `/design wireframe:`, `/design states:`, `/design variations:`, `/design spec:`, `/design storyboard:`, or `/design report:` runs that mode against the existing design. `EnterDesignMode` accepts the same modes through its optional `mode` argument. In an Agent Threads host version that supports argument-completion suggestions, typing `/design ` offers the mode keywords as autocomplete.
+
+### Report mode
+
+Use `report` for any request for a report, analysis, summary document, or charts. The result is a plain HTML file in the same host-allocated artifacts folder as other designs, so it lives in the vault, syncs with it, and opens in Geode's artifact preview. Nothing is uploaded: the `EnterDesignMode` tool description tells the agent to prefer `report` over cloud doc connectors (Claude Docs, Google Docs), which makes it the right place for personal or financial data.
+
+The scaffold writes `index.html` (the document), `styles.css`, `report.js`, and `data.js`:
+
+- `data.js` sets `window.REPORT_DATA`: the title, subtitle, byline, and a `charts` map. Each chart is `{ type, title, caption, categories, series: [{ name, values }], format: { prefix, suffix, decimals } }` with `type` of `stacked-bar`, `grouped-bar`, or `line`. It is the single source of truth for numbers, loaded by a script tag because the artifact CSP (`connect-src 'none'`) blocks `fetch`.
+- `index.html` holds the prose. A `<figure class="chart" data-chart="key"></figure>` is replaced at load time by the chart, its legend, and its data table.
+- `report.js` is a dependency-free SVG chart library with no inline script and no network access. Series colors come from an eight-color categorical palette with separate light and dark variants.
+- `styles.css` uses the host theme captured at creation, swaps palettes under `prefers-color-scheme`, and has print rules.
+
+Follow-up requests in the same thread (for example "show bonus vs salary") edit `data.js` and the relevant section in place; a repeat `EnterDesignMode` call reopens the same artifact (`created: false`) and never makes a second document. When the report is finished the agent adds, or updates without duplicating, a link under `## Claude Sessions` in today's `Daily/YYYY-MM-DD.md`. The plugin does not write to the vault itself, so this step is agent-driven. Report mode is static-only and returns an error for a Next.js design. If a thread already has a static design, `report:` adds `report.js` and `data.js` and asks the agent to rebuild `index.html` as the report.
+
+Steering is advisory, because a plugin cannot hide or deny other MCP tools. For a hard guarantee that report data never reaches a cloud connector, deny the connector in the host: add `mcp__claude_ai_Claude_Docs` to `permissions.deny` in `~/.claude/settings.json`, or to the Agent Threads `disallowedTools` setting. Optionally add a rule to your global CLAUDE.md: "Reports, analyses and charts: use EnterDesignMode with mode report (a local vault artifact). Never use the Claude Docs connector for these, and never send personal or financial data to a cloud connector."
 
 ## Runtimes
 
@@ -48,7 +64,7 @@ The colon is required, so `/design states of the union dashboard` is an ordinary
 
 Pick the runtime with `/design --nextjs <brief>` (also `--static`, `--runtime=nextjs`) or the tool's `runtime` argument. Flags go before the mode and brief and compose with modes: `/design --nextjs wireframe: a CRM`. The tool description steers the agent to `nextjs` for multi-page flows, client state, or complete app designs. A thread has one design artifact and its runtime cannot change afterwards. Next.js artifacts live in the same host-allocated artifacts folder as static ones (see storage above); the export goes to `exports/` inside it.
 
-Modes on Next.js: `wireframe:` and `states:` work (the mode instructions are mapped onto `app/page.tsx` and friends). `variations:`, `pick:`, `spec:`, and `storyboard:` depend on static multi-file snapshots, inline-script-free overlays, and JSON script mirrors, so they are static-only and return a clear error for a Next.js design.
+Modes on Next.js: `wireframe:` and `states:` work (the mode instructions are mapped onto `app/page.tsx` and friends). `variations:`, `pick:`, `spec:`, `storyboard:`, and `report:` depend on static multi-file snapshots, inline-script-free overlays, JSON script mirrors, and the report chart library, so they are static-only and return a clear error for a Next.js design.
 
 ### Manifest versions
 

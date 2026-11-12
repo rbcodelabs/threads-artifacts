@@ -7,6 +7,7 @@ import {
   designTitle,
   NEXTJS_UNSUPPORTED_MODES,
   scaffoldDesignArtifact,
+  scaffoldReportSupport,
   type DesignArtifact,
   type DesignArtifactFs,
   type DesignRuntime,
@@ -121,7 +122,7 @@ export class DesignService {
         });
         if (!allocation.success) throw new Error(allocation.message);
         allocatedRoot = allocation.path;
-        artifact = await scaffoldDesignArtifact(threadId, allocation.path, brief, Date.now(), this.fileFs, this.provideTheme(), effectiveRuntime);
+        artifact = await scaffoldDesignArtifact(threadId, allocation.path, brief, Date.now(), this.fileFs, this.provideTheme(), effectiveRuntime, mode);
         if (effectiveRuntime === 'nextjs') await this.nextjs!.ensureDependencies(allocation.path);
         const ref: ThreadArtifactRef = {
           providerId: DESIGN_PROVIDER_ID,
@@ -137,6 +138,7 @@ export class DesignService {
         created = true;
       }
 
+      if (mode === 'report' && !created && effectiveRuntime === 'static') await scaffoldReportSupport(this.fileFs, artifact.root);
       if (mode && effectiveRuntime === 'static') await applyModeViewport(artifact.root, mode, this.fileFs);
       await this.api.threads.open(threadId);
       const preview = await this.api.artifacts.invokeAction(threadId, artifact.id, DESIGN_ACTION_PREVIEW);

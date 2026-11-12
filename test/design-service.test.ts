@@ -315,7 +315,7 @@ describe('DesignService', () => {
 
     it('rejects modes that cannot run on nextjs and still allows wireframe/states', async () => {
       const deps = toolchain();
-      for (const mode of ['variations', 'pick', 'spec', 'storyboard'] as const) {
+      for (const mode of ['variations', 'pick', 'spec', 'storyboard', 'report'] as const) {
         const { api } = apiHarness();
         await expect(new DesignService(api, fileFs, undefined, undefined, undefined, deps).prepare('thread-1', 'CRM', { mode, runtime: 'nextjs' })).rejects.toThrow('only available for static');
         expect(api.artifacts.allocateStorage).not.toHaveBeenCalled();
@@ -355,6 +355,39 @@ describe('DesignService viewport per mode', () => {
   }
   it('fills the pane for variations', async () => { expect((await run('variations')).preset).toBe('fill'); });
   it('fills the pane for storyboard', async () => { expect((await run('storyboard')).preset).toBe('fill'); });
+  it('uses the responsive desktop frame for report', async () => { expect((await run('report', 'fill')).preset).toBe('desktop'); });
   it('restores desktop for other modes', async () => { expect((await run('pick', 'fill')).preset).toBe('desktop'); });
   it('does not rewrite the manifest without a mode', async () => { expect((await run(undefined)).manifestWrites).toBe(1); });
+});
+
+describe('DesignService report mode scaffold', () => {
+  function recordingFs() {
+    const names: string[] = [];
+    const fs: any = {
+      mkdir: vi.fn(async () => {}), rm: vi.fn(async () => {}),
+      writeFile: vi.fn(async (target: string) => { names.push(target.split('/').pop()!); }),
+      readFile: vi.fn(async () => JSON.stringify({ viewport: { preset: 'desktop', width: 1440, height: 900 } })),
+    };
+    return { fs, names };
+  }
+
+  it('writes the report scaffold for a new report artifact and returns report instructions', async () => {
+    const { api } = apiHarness();
+    const { fs, names } = recordingFs();
+    const prepared = await new DesignService(api, fs).prepare('t1', 'Quarterly analysis', { mode: 'report' });
+    expect(prepared.created).toBe(true);
+    expect(names).toEqual(expect.arrayContaining(['index.html', 'styles.css', 'report.js', 'data.js']));
+    expect(names).not.toContain('app.js');
+    expect(prepared.instructions).toContain('Mode: report');
+  });
+
+  it('adds only the chart library and data file when report mode runs on an existing static design', async () => {
+    const { api } = apiHarness();
+    const first = recordingFs();
+    await new DesignService(api, first.fs).prepare('t1', 'Landing page');
+    const second = recordingFs();
+    const again = await new DesignService(api, second.fs).prepare('t1', 'report: add a chart', { mode: 'report' });
+    expect(again.created).toBe(false);
+    expect(second.names.filter(n => n !== 'artifact.json').sort()).toEqual(['data.js', 'report.js']);
+  });
 });

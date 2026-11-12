@@ -59,6 +59,7 @@ const modeArgs = (mode: DesignMode | undefined, runtime?: DesignRuntime): [mode?
   return mode ? [mode] : [];
 };
 const MODE_USAGE = `/design [--nextjs] <brief> or /design [--nextjs] <mode>: <brief> (${DESIGN_MODE_LIST})`;
+const REPORT_HINT = 'For a report, analysis or charts use /design report: <brief> (local HTML in the vault, nothing uploaded).';
 // pick and spec always error on dispatch — there's nothing to pick/annotate in a brand-new thread —
 // so they're excluded from what dispatch offers as autocomplete.
 const DISPATCH_MODES: readonly DesignMode[] = DESIGN_MODES.filter(mode => mode !== 'pick' && mode !== 'spec');
@@ -70,7 +71,7 @@ export function createDesignSlashCommand(deps: DesignSlashCommandDependencies): 
   return {
     name: 'design',
     thread: {
-      description: `Create or revise a live UI artifact (static HTML by default, --nextjs for a full app prototype): ${MODE_USAGE}`,
+      description: `Create or revise a live UI artifact (static HTML by default, --nextjs for a full app prototype). ${REPORT_HINT} ${MODE_USAGE}`,
       argCompletions: modeCompletions(DESIGN_MODES),
       invoke: async (context, host) => {
         if (host.signal.aborted) return cancelled();
@@ -123,7 +124,7 @@ export function createDesignSlashCommand(deps: DesignSlashCommandDependencies): 
       },
     },
     dispatch: {
-      description: `Dispatch a thread with a live UI artifact (static HTML by default, --nextjs for a full app prototype): ${MODE_USAGE}`,
+      description: `Dispatch a thread with a live UI artifact (static HTML by default, --nextjs for a full app prototype). ${REPORT_HINT} ${MODE_USAGE}`,
       argCompletions: modeCompletions(DISPATCH_MODES),
       invoke: async (context, host) => {
         if (host.signal.aborted) return cancelled();
