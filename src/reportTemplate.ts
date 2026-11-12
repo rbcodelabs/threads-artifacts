@@ -118,6 +118,8 @@ figure.chart { margin: 1.4em 0; }
 figure.chart figcaption { margin-bottom: 8px; }
 figure.chart figcaption strong { display: block; font-size: 15px; }
 figure.chart figcaption span { color: var(--muted); font-size: 13px; }
+.chart-scroll, .table-scroll { overflow-x: auto; }
+.chart-scroll:focus-visible, .table-scroll:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .chart-svg { display: block; width: 100%; height: auto; }
 .chart-svg text { fill: var(--muted); font-family: var(--font); font-size: 12px; }
 .chart-svg .grid { stroke: var(--border); stroke-width: 1; }
@@ -136,8 +138,11 @@ figure.chart figcaption span { color: var(--muted); font-size: 13px; }
 .chart-table { margin-top: 10px; }
 .chart-error { padding: 10px 14px; border: 1px dashed var(--border); border-radius: 8px; color: var(--muted); }
 @media (max-width: 520px) {
-  .chart-svg text { font-size: 15px; }
-  th, td { padding: 5px 6px; }
+  /* The chart keeps a readable width and scrolls sideways; 640 / 720 scale makes 14 user units about 12px. */
+  .chart-svg { min-width: 640px; }
+  .chart-svg text { font-size: 14px; }
+  table { font-size: 12px; }
+  th, td { padding: 4px 6px; }
 }
 @media print {
   :root { color-scheme: light; --bg: #ffffff; --text: #1f2328; --muted: #57606a; --border: #d0d7de; --accent: #0b57d0;
@@ -216,11 +221,13 @@ export const REPORT_JS = `/* Dependency-free SVG charts for report mode. Reads w
     format = format || {};
     var decimals = format.decimals == null ? 0 : format.decimals;
     var abs = Math.abs(value), body, unit = '';
+    if (compact && /^ *(k|m|mm|b|bn|thousand|million|billion)([^a-z]|$)/i.test(format.suffix || '')) { compact = false; }
     if (compact && abs >= 1e9) { body = trimZeros((abs / 1e9).toFixed(1)); unit = 'B'; }
     else if (compact && abs >= 1e6) { body = trimZeros((abs / 1e6).toFixed(1)); unit = 'M'; }
     else if (compact && abs >= 1e4) { body = trimZeros((abs / 1e3).toFixed(1)); unit = 'k'; }
     else { body = abs.toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals }); }
-    return (value < 0 ? '-' : '') + (format.prefix || '') + body + unit + (format.suffix || '');
+    var negative = value < 0 && ((compact && abs >= 1e4) || Number(abs.toFixed(decimals)) !== 0);
+    return (negative ? '-' : '') + (format.prefix || '') + body + unit + (format.suffix || '');
   }
 
   function niceScale(min, max) {
@@ -232,7 +239,9 @@ export const REPORT_JS = `/* Dependency-free SVG charts for report mode. Reads w
     var lo = round(Math.floor(min / step) * step), hi = round(Math.ceil(max / step) * step);
     var ticks = [];
     for (var v = lo; v <= hi + step / 2; v += step) { ticks.push(round(v)); }
-    return { lo: lo, hi: hi, ticks: ticks };
+    var decimals = 0;
+    while (decimals < 6 && Math.abs(step * Math.pow(10, decimals) - Math.round(step * Math.pow(10, decimals))) > 1e-9) { decimals += 1; }
+    return { lo: lo, hi: hi, ticks: ticks, step: step, decimals: decimals };
   }
 
   function seriesOf(spec) {
@@ -271,6 +280,9 @@ export const REPORT_JS = `/* Dependency-free SVG charts for report mode. Reads w
     var scale = domain(spec, series);
     var plotW = W - M.left - M.right, plotH = H - M.top - M.bottom;
     var band = plotW / Math.max(categories.length, 1);
+    var tickFormat = {};
+    for (var key in (spec.format || {})) { tickFormat[key] = spec.format[key]; }
+    tickFormat.decimals = Math.max(tickFormat.decimals == null ? 0 : tickFormat.decimals, scale.decimals);
     function y(v) { return M.top + plotH * (1 - (v - scale.lo) / (scale.hi - scale.lo)); }
     function cx(k) { return M.left + band * (k + 0.5); }
     var out = [];
@@ -279,7 +291,7 @@ export const REPORT_JS = `/* Dependency-free SVG charts for report mode. Reads w
     out.push('<title id="' + esc(id) + '-t">' + esc(label) + '</title>');
     scale.ticks.forEach(function (t) {
       out.push('<line class="grid" x1="' + M.left + '" x2="' + (W - M.right) + '" y1="' + y(t).toFixed(1) + '" y2="' + y(t).toFixed(1) + '"/>');
-      out.push('<text class="tick-y" x="' + (M.left - 8) + '" y="' + (y(t) + 4).toFixed(1) + '">' + esc(fmt(t, spec.format, true)) + '</text>');
+      out.push('<text class="tick-y" x="' + (M.left - 8) + '" y="' + (y(t) + 4).toFixed(1) + '">' + esc(fmt(t === 0 ? 0 : t, tickFormat, true)) + '</text>');
     });
     var stride = Math.ceil(categories.length / 10);
     categories.forEach(function (name, k) {
@@ -287,7 +299,8 @@ export const REPORT_JS = `/* Dependency-free SVG charts for report mode. Reads w
       var shown = name.length > 14 ? name.slice(0, 13) + '...' : name;
       out.push('<text class="tick-x" x="' + cx(k).toFixed(1) + '" y="' + (H - M.bottom + 20) + '">' + esc(shown) + '<title>' + esc(name) + '</title></text>');
     });
-    out.push('<line class="axis" x1="' + M.left + '" x2="' + (W - M.right) + '" y1="' + y(0).toFixed(1) + '" y2="' + y(0).toFixed(1) + '"/>');
+    var axisY = Math.min(Math.max(y(0), M.top), M.top + plotH).toFixed(1);
+    out.push('<line class="axis" x1="' + M.left + '" x2="' + (W - M.right) + '" y1="' + axisY + '" y2="' + axisY + '"/>');
 
     if (spec.type === 'stacked-bar') {
       var barW = band * 0.6;
@@ -332,7 +345,7 @@ export const REPORT_JS = `/* Dependency-free SVG charts for report mode. Reads w
       var cells = series.map(function (s) { total += s.values[k]; return '<td>' + esc(fmt(s.values[k], spec.format, false)) + '</td>'; }).join('');
       return '<tr><th scope="row">' + esc(name) + '</th>' + cells + (stacked ? '<td>' + esc(fmt(total, spec.format, false)) + '</td>' : '') + '</tr>';
     }).join('');
-    return '<div class="table-scroll"><table class="chart-table"><caption>Data for: ' + esc(spec.title || 'chart') + '</caption><thead><tr>' + head + '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+    return '<div class="table-scroll" tabindex="0" role="region" aria-label="' + esc('Data table: ' + (spec.title || 'chart')) + '"><table class="chart-table"><caption>Data for: ' + esc(spec.title || 'chart') + '</caption><thead><tr>' + head + '</tr></thead><tbody>' + rows + '</tbody></table></div>';
   }
 
   function renderFigure(spec, id) {
@@ -343,7 +356,8 @@ export const REPORT_JS = `/* Dependency-free SVG charts for report mode. Reads w
     var series = seriesOf(spec);
     var legend = '<ul class="legend">' + series.map(function (s) { return '<li class="s' + s.slot + '"><span class="swatch" aria-hidden="true"></span>' + esc(s.name) + '</li>'; }).join('') + '</ul>';
     var caption = '<figcaption><strong>' + esc(spec.title || '') + '</strong>' + (spec.caption ? '<span>' + esc(spec.caption) + '</span>' : '') + '</figcaption>';
-    return caption + legend + renderChartSvg(spec, id) + renderTable(spec, series);
+    var scroller = '<div class="chart-scroll" tabindex="0" role="region" aria-label="' + esc('Chart: ' + (spec.title || id)) + '">' + renderChartSvg(spec, id) + '</div>';
+    return caption + legend + scroller + renderTable(spec, series);
   }
 
   var api = { renderChartSvg: renderChartSvg, renderFigure: renderFigure, renderTable: renderTable, niceScale: niceScale, format: fmt, escape: esc };

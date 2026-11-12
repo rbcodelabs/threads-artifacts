@@ -92,6 +92,38 @@ describe('report chart library', () => {
     expect(api.renderChartSvg({ ...line, series: [{ name: 'a', values: [Number.NaN, 3] }] }, 'x')).not.toContain('NaN');
   });
 
+  const ticks = (spec: unknown) => [...api.renderChartSvg(spec, 't').matchAll(/class="tick-y"[^>]*>([^<]*)</g)].map(m => m[1]);
+  const bars = (extra: object) => ({ type: 'grouped-bar', title: 'T', categories: ['a'], series: [{ name: 's', values: [1] }], ...extra });
+
+  it('keeps fractional y-axis ticks distinct and never prints -0', () => {
+    const t1 = ticks(bars({ series: [{ name: 's', values: [1] }] }));
+    expect(new Set(t1).size).toBe(t1.length);
+    expect(t1).toContain('0.2');
+    const t2 = ticks(bars({ series: [{ name: 's', values: [2] }] }));
+    expect(new Set(t2).size).toBe(t2.length);
+    expect(t2).toEqual(expect.arrayContaining(['0.0', '0.5', '1.0', '1.5', '2.0']));
+    expect(ticks(bars({ series: [{ name: 's', values: [-1, 1] }] })).join(' ')).not.toContain('-0');
+    expect(api.format(-0, {}, false)).toBe('0');
+    expect(api.format(-0.0001, {}, false)).toBe('0');
+  });
+
+  it('does not add a compact k when the suffix already carries a unit', () => {
+    expect(api.format(25000, { prefix: '$', suffix: 'k' }, true)).toBe('$25,000k');
+    expect(api.format(25000, { prefix: '$' }, true)).toBe('$25k');
+  });
+
+  it('keeps the axis line inside the plot for lines with an all-positive range', () => {
+    const svg = api.renderChartSvg({ ...line, series: [{ name: 'a', values: [500, 600] }] }, 'a');
+    const y = Number(/class="axis"[^>]*y1="([\d.]+)"/.exec(svg)![1]);
+    expect(y).toBeLessThanOrEqual(316);
+  });
+
+  it('makes charts and tables focusable scroll regions', () => {
+    const html = api.renderFigure(stacked, 'f');
+    expect(html).toContain('class="chart-scroll" tabindex="0" role="region"');
+    expect(html).toContain('class="table-scroll" tabindex="0" role="region"');
+  });
+
   it('builds nice axis ticks and formats numbers', () => {
     const scale = api.niceScale(0, 137);
     expect(scale.lo).toBe(0);

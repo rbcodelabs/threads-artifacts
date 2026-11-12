@@ -23,7 +23,7 @@ describe('design mode parsing', () => {
     ['PICK:c', 'pick', 'c'],
     ['spec: the pricing page', 'spec', 'the pricing page'],
     ['SPEC:', 'spec', ''],
-    ['report: tranche vesting analysis', 'report', 'tranche vesting analysis'],
+    ['report: quarterly revenue analysis', 'report', 'quarterly revenue analysis'],
     ['Report:  Q3 summary with charts', 'report', 'Q3 summary with charts'],
   ] as const)('parses a leading mode keyword with a colon: %j', (args, mode, brief) => {
     expect(parseDesignModeArgs(args)).toEqual({ mode, brief });
