@@ -102,7 +102,7 @@ export function createArtifactCommentsProvider(deps: CommentsProviderDeps): Comm
       handle = opening;
       handles.set(root, opening);
       // A failed open must not be remembered: the next call tries again.
-      opening.catch(() => { if (handles.get(root) === opening) handles.delete(root); });
+
     }
     return handle;
   }
