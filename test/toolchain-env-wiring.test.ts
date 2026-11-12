@@ -14,6 +14,10 @@ function envWith(present: string[]) {
   const fs: ToolchainEnvFs = {
     access: async target => { if (!have.has(target)) throw new Error('ENOENT'); },
     readdir: async () => { throw new Error('ENOENT'); },
+    stat: async target => {
+      if (!have.has(target)) throw new Error('ENOENT');
+      return { isFile: () => target.endsWith('/npm') };
+    },
   };
   return createToolchainEnv({ env: { PATH: GUI_PATH }, platform: 'darwin', homedir: '/Users/rick', fs, probe: noProbe });
 }
