@@ -306,7 +306,7 @@ export function createArtifactCommentsProvider(deps: CommentsProviderDeps): Comm
       const existing = await handle.get(`cmt_${selectionId.slice(4)}`);
       if (existing.status === 'ok') {
         // The comment owns its json always, and its png only if it was saved with one: a png this losing call added is an orphan.
-        remove = { json: false, png: files.createdPng && !existing.value.hasScreenshot };
+        remove = { json: false, png: false };
       } else if ((await handle.protectedSelectionIds().catch(() => null))?.includes(selectionId)) {
         return;
       }
