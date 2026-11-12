@@ -3,6 +3,7 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import type { CommandRunner } from './commandRunner';
 import { nextjsPackageJson } from './nextjsTemplate';
+import type { ToolchainEnv } from './toolchainEnv';
 
 /** The subset of fs used by the toolchain; injectable for tests. */
 export interface ToolchainFs {
@@ -25,6 +26,8 @@ export interface NextjsToolchainOptions {
   npmCommand?: string;
   platform?: NodeJS.Platform;
   installTimeoutMs?: number;
+  /** PATH augmentation and npm resolution for GUI-launched processes; without it the bare npm name is used. */
+  toolchainEnv?: ToolchainEnv;
 }
 
 const READY_MARKER = '.design-template-ready';
@@ -49,7 +52,8 @@ export class NextjsToolchain {
   }
 
   get nodeCommand(): string { return this.options.nodeCommand ?? process.execPath; }
-  get nodeEnv(): Readonly<Record<string, string>> { return NODE_ENV; }
+  /** NODE_ENV plus the augmented PATH once the toolchain environment is ready (callers await `ready()` first). */
+  get nodeEnv(): Readonly<Record<string, string>> { return { ...NODE_ENV, ...(this.options.toolchainEnv?.cachedEnv() ?? {}) }; }
 
   nextBin(root: string): string { return path.join(root, 'node_modules', 'next', 'dist', 'bin', 'next'); }
 
@@ -69,21 +73,35 @@ export class NextjsToolchain {
     const modules = path.join(dir, 'node_modules');
     if (await exists(this.fileFs, path.join(dir, READY_MARKER)) && await exists(this.fileFs, modules)) return modules;
 
+    let command = this.options.npmCommand;
+    let env: Record<string, string> | undefined;
+    if (this.options.toolchainEnv) {
+      env = await this.options.toolchainEnv.env();
+      if (!command) {
+        const npm = await this.options.toolchainEnv.resolveNpm();
+        if (!npm.ok) throw new Error(`Could not install Next.js design dependencies: ${npm.message}`);
+        command = npm.command;
+      }
+    }
+    command ??= (this.options.platform ?? process.platform) === 'win32' ? 'npm.cmd' : 'npm';
+
     // Anything present without the ready marker is a partial install; start clean.
     await this.fileFs.rm(dir, { recursive: true, force: true });
     await this.fileFs.mkdir(dir, { recursive: true });
     await this.fileFs.writeFile(path.join(dir, 'package.json'), nextjsPackageJson('design-template'));
     const result = await this.options.run({
-      command: this.options.npmCommand ?? ((this.options.platform ?? process.platform) === 'win32' ? 'npm.cmd' : 'npm'),
+      command,
       args: ['install', '--no-audit', '--no-fund', '--no-package-lock', '--loglevel=error'],
       cwd: dir,
+      ...(env ? { env } : {}),
       timeoutMs: this.options.installTimeoutMs ?? 10 * 60_000,
     });
     if (result.error || result.code !== 0) {
       await this.fileFs.rm(dir, { recursive: true, force: true });
       const reason = result.error
         ? `${result.error} (is Node.js/npm installed and on PATH?)`
-        : result.timedOut ? 'npm install timed out' : `npm install exited with code ${result.code}`;
+        : result.timedOut ? 'npm install timed out'
+          : `npm install exited with code ${result.code}${/env: node|node: not found|node: No such file/i.test(result.stderr) ? ' (npm could not find node on PATH)' : ''}`;
       throw new Error(`Could not install Next.js design dependencies: ${reason}\n${(result.stderr || result.stdout).slice(-1500)}`.trim());
     }
     await this.fileFs.writeFile(path.join(dir, READY_MARKER), `${new Date().toISOString()}\n`);
