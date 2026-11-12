@@ -582,7 +582,7 @@ describe('T8: two writers, adversarial cases', () => {
 
   it('three machines: ordinals stay unique and no id is lost when two external writers interleave with ours', async () => {
     await seed(1);
-    const h = await openWith({ ops: afterTmpCreated((n) => { if (n === 1) externalAppend(91, 2); if (n === 2) externalAppend(92, 2); }) });
+    const h = await openWith({ ops: afterTmpCreated((n) => { if (n === 1) externalAppend(91, 2); if (n === 2) externalAppend(92, 3); }) });
     ok(await h.create(pinDraft(2)));
     const disk = readDisk();
     expect(disk.comments.map((c: { id: string }) => c.id).sort()).toEqual([cmtId(1), cmtId(2), cmtId(91), cmtId(92)].sort());
