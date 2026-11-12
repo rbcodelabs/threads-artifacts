@@ -247,7 +247,7 @@ export async function readSelectionJson(root: string, selectionId: string, ops: 
       const stat = await handle.stat();
       if (!stat.isFile() || stat.nlink > 1 || stat.size > MAX_SELECTION_JSON_BYTES || (before.ino && stat.ino && before.ino !== stat.ino)) return null;
       // Read at most cap+1 bytes: a file that grew after the size check is rejected, never buffered whole.
-      const buffer = Buffer.alloc(MAX_SELECTION_JSON_BYTES + 1);
+      const buffer = Buffer.alloc(MAX_SELECTION_JSON_BYTES);
       let filled = 0;
       while (filled < buffer.length) {
         const { bytesRead } = await handle.read(buffer, filled, buffer.length - filled, filled);
