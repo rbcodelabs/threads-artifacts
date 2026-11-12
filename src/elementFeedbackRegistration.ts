@@ -145,7 +145,7 @@ export function registerElementFeedback(options: ElementFeedbackOptions): Dispos
       comments = candidate;
       candidate.activate();
     } else {
-      safely(() => attempt.dispose());
+      attempt.dispose();
       candidate.dispose();
       log.warn(`threads-design: contract v2 handler not registered (${attempt.status}): ${attempt.message}`);
       if (attempt.status !== 'unsupported-version') {
