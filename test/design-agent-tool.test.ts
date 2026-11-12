@@ -19,6 +19,7 @@ describe('EnterDesignMode agent tool', () => {
     expect(DESIGN_TOOL_DESCRIPTION.startsWith('Use mode "report" whenever the user asks for a report, analysis, summary document or charts')).toBe(true);
     expect(DESIGN_TOOL_DESCRIPTION).toContain('Claude Docs, Google Docs');
     expect(DESIGN_TOOL_DESCRIPTION).toContain('nothing is uploaded');
+    expect(DESIGN_TOOL_DESCRIPTION).toContain('begin the brief with a short plain title phrase (under 60 characters, no "Title:" prefix, no file paths)');
     expect(DESIGN_TOOL_DESCRIPTION).toContain('Modes variations, pick, spec, storyboard and report are static-only');
   });
 
