@@ -8,7 +8,8 @@ import type { PluginDataStorage } from '../src/commentKey';
 import { createCommentStore, defaultStoreFsOps } from '../src/commentStore';
 import type { CommentRootHandle, CommentStoreOptions } from '../src/commentStore';
 import type { ArtifactCommentsResult } from '../src/geodeArtifactFeedbackV2';
-import { ARTIFACT_ID, KEY, NOW, pinDraft } from './helpers/commentFixtures';
+import { salvageComments } from '../src/commentModel';
+import { ARTIFACT_ID, fileOf, KEY, NOW, pinDraft, stored } from './helpers/commentFixtures';
 
 /**
  * Independent QA pass over createPluginDataGuard (src/commentKey.ts) and the store's key timeout and
@@ -423,5 +424,35 @@ describe('store: key timeout and poll overlap', () => {
     const timersAfter = active.call(process).filter((r) => r === 'Timeout').length;
     expect(timersAfter).toBeLessThanOrEqual(timersBefore);
     fsSync.existsSync(root);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Surviving mutants from the first QA mutation run: hardening from the 25a31d81 fix with no direct test
+// ---------------------------------------------------------------------------------------------
+
+describe('hostile-file hardening that had no direct test', () => {
+  it('salvage stops after 5000 examined objects even when none of them look like comments (the work cap counts every slice)', () => {
+    const good = JSON.stringify(stored(1));
+    expect(salvageComments('{}'.repeat(10) + good).map((c) => c.ordinal)).toEqual([1]);
+    expect(salvageComments('{}'.repeat(5001) + good)).toEqual([]);
+  });
+
+  it('a comment carrying a 100,000-level nested member does not crash the open: the store stays usable and keeps the comment', async () => {
+    const base = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'td-deep-')));
+    try {
+      const root = path.join(base, 'artifact');
+      await fs.mkdir(path.join(root, '.threads-design'), { recursive: true });
+      const body = JSON.stringify({ ...fileOf([stored(1, { junk: '@@DEEP@@' })]) });
+      const depth = 100_000;
+      await fs.writeFile(path.join(root, '.threads-design', 'comments.json'), body.replace('\"@@DEEP@@\"', '['.repeat(depth) + ']'.repeat(depth)));
+      const h = await createCommentStore({ keys: { getKey: async () => KEY }, now: () => new Date(Date.parse(NOW)) }).open({ root, artifactId: ARTIFACT_ID });
+      const snap = await h.snapshot();
+      h.dispose();
+      expect(snap.health, snap.notice ?? '').not.toBe('unavailable');
+      expect(snap.comments.map((c) => c.ordinal)).toEqual([1]);
+    } finally {
+      await fs.rm(base, { recursive: true, force: true });
+    }
   });
 });
