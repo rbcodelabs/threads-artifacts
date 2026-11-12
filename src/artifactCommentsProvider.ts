@@ -195,7 +195,7 @@ export function createArtifactCommentsProvider(deps: CommentsProviderDeps): Comm
         const result = await handle.create({
           selectionId: selection.selectionId,
           // Host clock: capturedAt comes from the page-side embedder and is used only for the staleness check above.
-          createdAt: new Date(now()).toISOString(),
+          createdAt: selection.capturedAt,
           artifactRevision: selection.artifactRevision,
           viewSessionId: selection.viewSessionId,
           kind: 'pin',
