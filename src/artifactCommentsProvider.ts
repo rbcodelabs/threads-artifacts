@@ -276,7 +276,7 @@ export function createArtifactCommentsProvider(deps: CommentsProviderDeps): Comm
       const protectIds = await handle.protectedSelectionIds();
       await pruneSelections({ root, keep: retention, protectId: selectionId, protectIds });
     } catch {
-      // A store that is not healthy cannot say which selections are pinned: keep everything.
+      await pruneSelections({ root, keep: retention, protectId: selectionId });
     }
   }
 
