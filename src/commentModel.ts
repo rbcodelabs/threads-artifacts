@@ -101,7 +101,9 @@ const isObject = (value: unknown): value is Json => typeof value === 'object' &&
 const own = (obj: Json, key: string): unknown => (Object.prototype.hasOwnProperty.call(obj, key) ? obj[key] : undefined);
 const isString = (value: unknown, max: number, min = 0): value is string => typeof value === 'string' && value.length >= min && value.length <= max;
 const isIso = (value: unknown): value is string => typeof value === 'string' && ISO.test(value) && Number.isFinite(Date.parse(value));
-const isInt = (value: unknown, min: number): value is number => typeof value === 'number' && Number.isInteger(value) && value >= min && value <= Number.MAX_SAFE_INTEGER;
+/** Counters stay far below 2^53 so `+ 1` always changes them; a hostile file cannot park one at the edge. */
+const MAX_COUNTER = 1_000_000_000;
+const isInt = (value: unknown, min: number, max = Number.MAX_SAFE_INTEGER): value is number => typeof value === 'number' && Number.isInteger(value) && value >= min && value <= max;
 const truncate = (value: string, max: number): string => (value.length > max ? value.slice(0, max) : value);
 
 /** Deterministic JSON: object keys sorted at every depth, `undefined` members omitted. */
@@ -368,9 +370,9 @@ export function validateStoredComment(raw: unknown): CommentValidation {
   const kindRaw = own(raw, 'kind');
   const kind: ArtifactCommentKind = kindRaw === 'pin' || kindRaw === 'text-edit' ? kindRaw : (clamped.push('kind'), 'pin');
   const versionRaw = own(raw, 'version');
-  const version = isInt(versionRaw, 1) ? versionRaw : (clamped.push('version'), 1);
+  const version = isInt(versionRaw, 1, MAX_COUNTER) ? versionRaw : (clamped.push('version'), 1);
   const ordinalRaw = own(raw, 'ordinal');
-  const ordinal = isInt(ordinalRaw, 1) ? ordinalRaw : (clamped.push('ordinal'), 0);
+  const ordinal = isInt(ordinalRaw, 1, MAX_COUNTER) ? ordinalRaw : (clamped.push('ordinal'), 0);
   const sentAtRaw = own(raw, 'sentAt');
   const sentAt = sentAtRaw === null ? null : isIso(sentAtRaw) ? sentAtRaw : (clamped.push('sentAt'), null);
   const sigRaw = own(raw, 'sig');
@@ -497,7 +499,13 @@ export function normalizeCommentsFile(raw: unknown, nowMs: number): NormalizeRes
   const writtenAt = own(raw, 'writtenAt');
   const claimedSha = own(raw, 'bodySha256');
 
-  const shaMismatch = typeof claimedSha !== 'string' || claimedSha !== sha256(canonicalJson({ comments: rawComments, tombstones: rawTombstones ?? [], nextOrdinal: nextRaw }));
+  // A hostile, deeply nested body can overflow the recursive canonicalizer: that is a mismatch, not a crash.
+  let shaMismatch = true;
+  try {
+    shaMismatch = typeof claimedSha !== 'string' || claimedSha !== sha256(canonicalJson({ comments: rawComments, tombstones: rawTombstones ?? [], nextOrdinal: nextRaw }));
+  } catch {
+    shaMismatch = true;
+  }
 
   let dropped = 0;
   let clampedCount = 0;
@@ -529,7 +537,7 @@ export function normalizeCommentsFile(raw: unknown, nowMs: number): NormalizeRes
   const overCap = Math.max(0, live.length - MAX_COMMENTS);
   live = live.slice(0, MAX_COMMENTS);
 
-  const resolved = resolveOrdinals(live, isInt(nextRaw, 1) ? nextRaw : 1);
+  const resolved = resolveOrdinals(live, isInt(nextRaw, 1, MAX_COUNTER) ? nextRaw : 1);
   const body: CommentsBody = { comments: resolved.comments, tombstones, nextOrdinal: resolved.nextOrdinal };
   const file: CommentsFile = {
     schemaVersion,
@@ -649,9 +657,9 @@ export function salvageComments(text: string): StoredComment[] {
     } else if (ch === 0x7d && starts.length > 0) {
       const start = starts.pop()!;
       if (start < 0 || i + 1 - start > SALVAGE_MAX_OBJECT) continue;
+      attempts += 1; // every slice examined counts, so the scan cost is bounded too
       const slice = text.slice(start, i + 1);
       if (!slice.includes('"selectionId"')) continue;
-      attempts += 1;
       try {
         const result = validateStoredComment(JSON.parse(slice));
         if (result.ok) {
