@@ -628,12 +628,14 @@ describe('mergeBodies', () => {
     const t = (id: string, at: string) => ({ id, at });
     const m = mergeBodies(
       body([], { tombstones: [t(cmtId(1), '2026-11-12T08:00:00.000Z'), t(cmtId(2), '2026-09-01T00:00:00.000Z')] }),
-      body([], { tombstones: [t(cmtId(1), '2026-11-12T09:00:00.000Z'), ...Array.from({ length: 250 }, (_, i) => t(cmtId(100 + i), new Date(NOW_MS - (i + 1) * 1000).toISOString()))] }),
+      body([], { tombstones: [t(cmtId(1), '2026-11-12T09:00:00.000Z'), ...Array.from({ length: 100 }, (_, i) => t(cmtId(100 + i), new Date(NOW_MS - (i + 1) * 1000).toISOString()))] }),
       NOW_MS,
     );
     expect(m.tombstones.find((x) => x.id === cmtId(1))!.at).toBe('2026-11-12T09:00:00.000Z');
     expect(m.tombstones.some((x) => x.id === cmtId(2))).toBe(false);
-    expect(m.tombstones.length).toBeLessThanOrEqual(200);
+    const crowded = mergeBodies(body([]), body([], { tombstones: Array.from({ length: 250 }, (_, i) => t(cmtId(100 + i), new Date(NOW_MS - (i + 1) * 1000).toISOString())) }), NOW_MS);
+    expect(crowded.tombstones).toHaveLength(200);
+    expect(crowded.tombstones[0].id).toBe(cmtId(100));
   });
 
   it('two machines that both created ordinal 7: the later-created comment gets the next free ordinal', () => {

@@ -737,7 +737,7 @@ export function createCommentStore(options: CommentStoreOptions): CommentStore {
         const id = `cmt_${draft.selectionId.slice(4)}`;
         const existing = this.state.file.comments.find((c) => c.id === id);
         if (existing) {
-          const same = canonicalJson({ ...draftFields(existing) }) === canonicalJson({ ...draftFields({ ...draft, id }) });
+          const same = canonicalJson(draftFields(existing)) === canonicalJson(draftFields(draft));
           return same ? accepted({ comment: toPublicComment(existing, this.provenanceOf(existing)), created: false }) : rejected('conflict', 'A different comment already uses this selection.');
         }
         if (this.state.file.comments.length >= MAX_COMMENTS) return rejected('limit', 'Resolve or delete older comments to add more.');
