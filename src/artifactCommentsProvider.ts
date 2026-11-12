@@ -246,7 +246,7 @@ export function createArtifactCommentsProvider(deps: CommentsProviderDeps): Comm
           const attached = handle.subscribe((change: ArtifactCommentsChange) => {
             if (cancelled) return;
             try {
-              listener(structuredClone(change));
+              listener(change);
             } catch (error) {
               warn('threads-design: a comments listener threw', error);
             }
