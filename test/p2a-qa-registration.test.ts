@@ -420,7 +420,7 @@ describe('plugin data goes only through the guard (T5/A3)', () => {
     const offenders = fsSync.readdirSync(dir).filter((f) => f.endsWith('.ts') && f !== 'commentKey.ts').filter((f) => /\b(loadData|saveData)\b/.test(code(f)));
     expect(offenders).toEqual(['main.ts']);
     const main = code('main.ts');
-    const guard = main.match(/createPluginDataGuard\(\{[^}]*\}\)/g) ?? [];
+    const guard: string[] = main.match(/createPluginDataGuard\(\{[^}]*\}\)/g) ?? [];
     expect(guard).toHaveLength(1);
     expect(main.replace(guard[0], '')).not.toMatch(/\b(loadData|saveData)\b/);
   });
