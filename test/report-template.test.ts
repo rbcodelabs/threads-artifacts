@@ -142,7 +142,7 @@ describe('report scaffold safety', () => {
   const files = { 'index.html': reportHtml(), 'styles.css': reportCss(normalizeHostTheme('dark', {})), 'report.js': REPORT_JS, 'data.js': reportDataJs() };
 
   it('has no inline script bodies and loads only same-folder scripts', () => {
-    const scripts = [...files['index.html'].matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/g)];
+    const scripts = [...files['index.html'].matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi)];
     expect(scripts.map(m => m[1].trim())).toEqual(['src="data.js"', 'src="report.js"']);
     for (const m of scripts) expect(m[2].trim()).toBe('');
     expect(files['index.html']).not.toMatch(/\son[a-z]+\s*=/i);
