@@ -996,5 +996,6 @@ function parseUpdate(input: unknown): { id: string; expectedVersion: number; eve
 
 /** The fields a replayed `create` must reproduce exactly (timestamps of later changes are not compared). */
 function draftFields(c: { selectionId: string; createdAt: string; artifactRevision: number; viewSessionId: string; kind: string; text: string; anchor: unknown; label: string; hasScreenshot: boolean; redacted: boolean }) {
-  return { selectionId: c.selectionId, createdAt: c.createdAt, artifactRevision: c.artifactRevision, viewSessionId: c.viewSessionId, kind: c.kind, text: c.text, anchor: c.anchor, label: c.label, hasScreenshot: c.hasScreenshot, redacted: c.redacted };
+  // createdAt is the store host's clock at first save, so a later retry of the same pin must not count as different content.
+  return { selectionId: c.selectionId, artifactRevision: c.artifactRevision, viewSessionId: c.viewSessionId, kind: c.kind, text: c.text, anchor: c.anchor, label: c.label, hasScreenshot: c.hasScreenshot, redacted: c.redacted };
 }

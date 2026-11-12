@@ -105,6 +105,15 @@ export function registerElementFeedback(options: ElementFeedbackOptions): Dispos
     warn: (message: string, error?: unknown) => log.warn(message, error),
   };
 
+  // A host's refusal dispose is documented as an idempotent no-op, but a misbehaving host must not cost us the coordinator or the v1 fallback.
+  const safely = (fn: () => void): void => {
+    try {
+      fn();
+    } catch (error) {
+      log.warn('threads-design: disposing a refused registration failed', error);
+    }
+  };
+
   const register = (handler: ArtifactFeedbackHandler | ArtifactFeedbackHandlerV2): ArtifactFeedbackRegistration | null => {
     try {
       return plugin.registerArtifactFeedbackHandler!(handler);
@@ -136,7 +145,7 @@ export function registerElementFeedback(options: ElementFeedbackOptions): Dispos
       comments = candidate;
       candidate.activate();
     } else {
-      attempt.dispose();
+      safely(() => attempt.dispose());
       candidate.dispose();
       log.warn(`threads-design: contract v2 handler not registered (${attempt.status}): ${attempt.message}`);
       if (attempt.status !== 'unsupported-version') {
@@ -162,7 +171,7 @@ export function registerElementFeedback(options: ElementFeedbackOptions): Dispos
     }
     if (attempt.status !== 'registered') {
       log.warn(`threads-design: artifact feedback handler not registered (${attempt.status}): ${attempt.message}`);
-      attempt.dispose();
+      safely(() => attempt.dispose());
       coordinator.dispose();
       return null;
     }
