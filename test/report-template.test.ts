@@ -210,3 +210,75 @@ describe('report page wiring', () => {
     expect(toc.innerHTML).toContain('href="#cash-flow"');
   });
 });
+
+describe('report scaffold marks for the element picker (H2)', () => {
+  const api = loadApi();
+  const svgOf = (spec: unknown) => api.renderChartSvg(spec, 'chart-revenue');
+
+  it('gives every bar data-series and data-category and keeps its tooltip title', () => {
+    const svg = svgOf(stacked);
+    expect(svg).toContain('<rect class="bar s0" data-series="Salary" data-category="2026" ');
+    expect(svg).toContain('<rect class="bar s1" data-series="Bonus" data-category="2027" ');
+    expect(svg).toContain('<title>Bonus / 2027: $30</title>');
+    expect(svg.match(/<rect [^>]*data-series=/g)).toHaveLength(4);
+    expect(api.renderChartSvg(grouped, 'g').match(/<rect [^>]*data-category=/g)).toHaveLength(4);
+  });
+
+  it('gives line points the same marks and the polyline a series title', () => {
+    const svg = svgOf(line);
+    expect(svg).toContain('<circle class="pt s0" data-series="Salary" data-category="2026" ');
+    expect(svg).toMatch(/<polyline class="line s0" data-series="Salary" points="[^"]*"><title>Salary<\/title><\/polyline>/);
+    expect(svg).toMatch(/<polyline class="line s1" data-series="Bonus" points="[^"]*"><title>Bonus<\/title><\/polyline>/);
+  });
+
+  it('gives the svg a stable id derived from the figure id', () => {
+    expect(svgOf(stacked)).toContain('<svg class="chart-svg" id="chart-revenue-svg" ');
+    expect(svgOf(stacked)).toContain('aria-labelledby="chart-revenue-t"');
+  });
+
+  it('removes the duplicate nested title from x tick labels so the anchor reads once', () => {
+    const svg = svgOf(stacked);
+    expect(svg).toContain('<text class="tick-x" data-category="2026" ');
+    expect(svg).toMatch(/<text class="tick-x"[^>]*>2026<\/text>/);
+    expect(svg).not.toMatch(/<text class="tick-x"[^>]*>[^<]*<title>/);
+  });
+
+  it('keeps the full category name reachable when a tick label is shortened', () => {
+    const svg = svgOf({ ...stacked, categories: ['An extremely long category name', 'B'] });
+    expect(svg).toMatch(/<text class="tick-x" data-category="An extremely long category name" aria-label="An extremely long category name" [^>]*>An extremely \.\.\.<\/text>/);
+  });
+
+  it('marks legend items and swatches with the series name', () => {
+    const html = api.renderFigure(stacked, 'chart-revenue');
+    expect(html).toContain('<li class="s0" data-series="Salary"><span class="swatch" data-series="Salary" aria-hidden="true"></span>Salary</li>');
+  });
+
+  it('escapes hostile series and category names in the new attributes', () => {
+    const hostile = { ...stacked, categories: ['"><img src=x>', 'B'], series: [{ name: '" onload="x', values: [1, 2] }] };
+    const html = api.renderFigure(hostile, 'c');
+    expect(html).not.toContain('<img');
+    expect(html).not.toContain('" onload="x');
+    expect(html).toContain('data-series="&quot; onload=&quot;x"');
+  });
+
+  it('puts a stable id on each figure in the page and in the scaffold html', () => {
+    expect(reportHtml()).toContain('<figure class="chart" id="chart-revenue" data-chart="revenue">');
+    expect(reportHtml()).toContain('<figure class="chart" id="chart-headcount" data-chart="headcount">');
+    expect(reportHtml()).toContain('<figure class="chart" id="chart-trend" data-chart="trend">');
+  });
+
+  it('assigns the figure id at runtime when the page does not carry one (existing documents)', () => {
+    const attrs = { 'data-chart': 'a' };
+    const figure = { getAttribute: (k: string) => (attrs as Record<string, string>)[k], textContent: '', innerHTML: '', id: '' };
+    const document = { readyState: 'complete', title: '', querySelectorAll: (sel: string) => (sel === 'figure[data-chart]' ? [figure] : []), getElementById: () => null, addEventListener: () => undefined };
+    const window: Record<string, unknown> = { REPORT_DATA: { charts: { a: { type: 'line', title: 'T', categories: ['x'], series: [{ name: 's', values: [1] }] } } } };
+    vm.runInNewContext(REPORT_JS, { window, document, Array });
+    expect(figure.id).toBe('chart-a');
+    expect(figure.innerHTML).toContain('id="chart-a-svg"');
+  });
+
+  it('keeps the tooltip title on every mark for accessibility', () => {
+    const svg = svgOf(line);
+    expect(svg.match(/<circle [^>]*><title>/g)).toHaveLength(4);
+  });
+});

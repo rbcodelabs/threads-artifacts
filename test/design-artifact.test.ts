@@ -121,6 +121,16 @@ describe('design artifact contract', () => {
       expect(message.indexOf("If this thread's design was not created in report mode")).toBeLessThan(message.indexOf('The artifact folder already contains the report scaffold'));
     });
 
+    it('tells the agent where chart marks get their data (H3) without touching the shared element rules', () => {
+      const message = designKickoffMessage(artifact, 'Comp analysis', 'report');
+      const section = message.slice(message.indexOf('Mode: report'), message.indexOf('Artifact rules:'));
+      expect(section).toContain('data-series');
+      expect(section).toContain('data-category');
+      expect(section).toContain('edit data.js, not the generated SVG');
+      expect(section.split('\n').filter(line => line.includes('data-series')).length).toBe(1);
+      expect(message).toContain('- Element comments: a later message may begin with "Design comment on a"');
+    });
+
     it('keeps the daily-note link as the last step of the report instructions', () => {
       const message = designKickoffMessage(artifact, 'Comp analysis', 'report');
       const section = message.slice(message.indexOf('Mode: report'), message.indexOf('Artifact rules:'));
