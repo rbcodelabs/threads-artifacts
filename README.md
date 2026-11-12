@@ -72,6 +72,17 @@ Modes on Next.js: `wireframe:` and `states:` work (the mode instructions are map
 
 `artifact.json` `schemaVersion` is **2** for new artifacts (adds `runtime: "nextjs"` and `network: "loopback"`). Version **1** (static-only) artifacts are still read, validated (`parseDesignManifest`), previewed, and revised unchanged.
 
+### Next.js designs need Node.js and npm
+
+Next.js designs install their dependencies once with `npm` and run `next` with Node. If you see "npm was not found" (or "is Node.js/npm installed and on PATH?"), the usual cause is how Geode was launched: an app started from the Dock or Finder inherits only `PATH=/usr/bin:/bin:/usr/sbin:/sbin`, which does not contain Homebrew, fnm, nvm, Volta or other Node installs, while a terminal launch has your full PATH.
+
+The plugin already compensates: it appends well-known locations that exist (Homebrew, `/usr/local/bin`, Volta, fnm, mise and asdf shims, the newest nvm version; on Windows `%ProgramFiles%\nodejs` and `%APPDATA%\npm`) and the PATH reported once by your login shell (`$SHELL -ilc`, 5 s timeout, bash, zsh, fish, sh, dash or ksh only; failures are ignored). The original PATH entries always stay first. If npm is still not found, the error lists what was searched and the PATH Geode started with. Then do one of:
+
+- install Node.js (https://nodejs.org);
+- start Geode from a terminal;
+- on macOS, run `launchctl setenv PATH "/opt/homebrew/bin:$PATH"` and restart Geode;
+- set the environment variable `THREADS_DESIGN_NPM` to the absolute path of your `npm` (the directory is added to PATH so its `node` is found).
+
 ### Next.js artifacts
 
 The scaffold writes `package.json`, `next.config.mjs` (`output: 'export'`, `trailingSlash`, unoptimized images), `tsconfig.json`, Tailwind/PostCSS config, `app/layout.tsx`, `app/page.tsx`, and an `AGENTS.md` telling the design agent the export rules: mock data and client state only; no route handlers, middleware, Server Actions, `cookies()`/`headers()`, or dynamic segments without `generateStaticParams()`.
