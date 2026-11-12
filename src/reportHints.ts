@@ -338,12 +338,12 @@ function resolveBlock(blocks: readonly Block[], signals: Signals): { block: Bloc
     }
   }
   if (candidates.length <= 1) return { block: candidates[0], strong: false };
-  // Ambiguous ids (for example the svg of "revenue" and the figure "revenue-svg"): longest key first, then prefer
-  // the block that actually holds the series or category being picked.
-  candidates.sort((a, b) => b.key.length - a.key.length);
-  const holds = (block: Block) => (signals.series !== null && block.seriesNames.some(e => e.value === signals.series))
-    || (signals.category !== null && block.categories.some(e => e.value === signals.category));
-  return { block: candidates.find(holds) ?? candidates[0], strong: false };
+  // Ambiguous ids (for example the svg of "revenue" and the figure "revenue-svg"): prefer the block that holds the
+  // picked series (the more specific signal), then the category, then the longest key.
+  const score = (block: Block) => (signals.series !== null && block.seriesNames.some(e => e.value === signals.series) ? 2 : 0)
+    + (signals.category !== null && block.categories.some(e => e.value === signals.category) ? 1 : 0);
+  candidates.sort((x, y) => score(y) - score(x) || y.key.length - x.key.length);
+  return { block: candidates[0], strong: false };
 }
 
 export function findReportHints(files: readonly ReportFile[], selection: ElementSelection, options: ReportHintOptions = {}): { file: string; hint: DatumHint }[] {
