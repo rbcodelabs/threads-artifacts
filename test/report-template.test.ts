@@ -243,9 +243,14 @@ describe('report scaffold marks for the element picker (H2)', () => {
     expect(svg).not.toMatch(/<text class="tick-x"[^>]*>[^<]*<title>/);
   });
 
-  it('keeps the full category name reachable when a tick label is shortened', () => {
+  it('keeps a hover title only for a shortened tick label, so the full name stays reachable', () => {
     const svg = svgOf({ ...stacked, categories: ['An extremely long category name', 'B'] });
-    expect(svg).toMatch(/<text class="tick-x" data-category="An extremely long category name" aria-label="An extremely long category name" [^>]*>An extremely \.\.\.<\/text>/);
+    expect(svg).toContain('<text class="tick-x" data-category="An extremely long category name" x=');
+    expect(svg).toMatch(/>An extremely \.\.\.<title>An extremely long category name<\/title><\/text>/);
+    expect(svg).not.toContain('aria-label="An extremely');
+    // A label that is shown in full has no title at all, so its text is read once.
+    const plain = svgOf({ ...stacked, categories: ['Q2', 'Q3'] });
+    expect(plain).toMatch(/<text class="tick-x" data-category="Q2" [^>]*>Q2<\/text>/);
   });
 
   it('marks legend items and swatches with the series name', () => {
@@ -280,5 +285,27 @@ describe('report scaffold marks for the element picker (H2)', () => {
   it('keeps the tooltip title on every mark for accessibility', () => {
     const svg = svgOf(line);
     expect(svg.match(/<circle [^>]*><title>/g)).toHaveLength(4);
+  });
+});
+
+describe('hostile values in the new markup (A7)', () => {
+  const api = loadApi();
+  it('escapes the shortened-tick title, legend text and the svg id', () => {
+    const hostile = { ...stacked, categories: ['</title><img src=x onerror=y>AAAAAAAA', 'B'], series: [{ name: '<b>Bold</b>"x', values: [1, 2] }] };
+    const html = api.renderFigure(hostile, 'chart-"><img src=z>');
+    expect(html).not.toContain('<img');
+    expect(html).not.toContain('<b>');
+    expect(html).toContain('&lt;/title&gt;&lt;img');
+    expect(html).toContain('id="chart-&quot;&gt;&lt;img src=z&gt;-svg"');
+  });
+
+  it('assigns a hostile data-chart key as a property value, never as markup', () => {
+    const key = 'x"><img src=y>';
+    const figure = { getAttribute: (k: string) => (k === 'data-chart' ? key : undefined), textContent: '', innerHTML: '', id: '' };
+    const document = { readyState: 'complete', title: '', querySelectorAll: (sel: string) => (sel === 'figure[data-chart]' ? [figure] : []), getElementById: () => null, addEventListener: () => undefined };
+    const window: Record<string, unknown> = { REPORT_DATA: { charts: { [key]: { type: 'line', title: 'T', categories: ['x'], series: [{ name: 's', values: [1] }] } } } };
+    vm.runInNewContext(REPORT_JS, { window, document, Array });
+    expect(figure.id).toBe('chart-' + key);
+    expect(figure.innerHTML).not.toContain('<img');
   });
 });

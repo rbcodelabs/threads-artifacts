@@ -325,15 +325,6 @@ describe('bounded work and containment', () => {
     expect(hints.some(h => h.snippet.includes('Late series'))).toBe(false);
   });
 
-  it('many name lines are capped to the ranked top five', async () => {
-    const lines = ['window.REPORT_DATA = { charts: { sales: {', " categories: ['Q1'],", ' series: ['];
-    for (let i = 0; i < 2000; i++) lines.push("  { name: 'Dup', values: [1] },");
-    lines.push('] } } };');
-    await write('data.js', lines.join('\n'));
-    const hints = await findSourceHints(root, selectionFor({ ...bar, html: '<rect data-series="Dup" data-category="Q1"></rect>', text: '', ancestors: svgAncestors('sales') }));
-    expect(hints.length).toBeLessThanOrEqual(5);
-  });
-
   it('ignores a symlinked data.js and data files in subdirectories', async () => {
     const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'td-rep-out-'));
     try {

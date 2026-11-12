@@ -127,6 +127,8 @@ describe('design artifact contract', () => {
       expect(section).toContain('data-series');
       expect(section).toContain('data-category');
       expect(section).toContain('edit data.js, not the generated SVG');
+      expect(section).toContain('newly created reports');
+      expect(section).toContain('(older reports may not)');
       expect(section.split('\n').filter(line => line.includes('data-series')).length).toBe(1);
       expect(message).toContain('- Element comments: a later message may begin with "Design comment on a"');
     });
