@@ -2,6 +2,7 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import type { ElementSelection } from './geodeArtifactFeedback';
 import type { SourceHint } from './elementPrompt';
+import { attribute, findReportHints, openingTag } from './reportHints';
 
 /**
  * Heuristic static source hints: where in the artifact's root files might the picked element be
@@ -75,23 +76,6 @@ async function loadFiles(root: string): Promise<SourceFile[]> {
     }
   }
   return files;
-}
-
-/** Opening tag of the picked element, scanned quote-aware so `>` inside an attribute value does not end it. */
-function openingTag(html: string): string {
-  let quote = '';
-  for (let i = 0; i < html.length && i < 2048; i++) {
-    const char = html[i];
-    if (quote) { if (char === quote) quote = ''; continue; }
-    if (char === '"' || char === "'") quote = char;
-    else if (char === '>') return html.slice(0, i + 1);
-  }
-  return html.slice(0, 120);
-}
-
-function attribute(tagText: string, name: string): string | null {
-  const match = new RegExp(`(?:^|\\s)${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, 'i').exec(tagText);
-  return match ? (match[1] ?? match[2] ?? match[3] ?? '') : null;
 }
 
 const snippetAround = (line: string, index: number): string => line.slice(Math.max(0, index - SNIPPET_BEFORE), index + SNIPPET_AFTER).trim();
@@ -170,6 +154,16 @@ export async function findSourceHints(root: string, selection: ElementSelection,
       const hits = scan(file, line => line.indexOf(tagNeedle));
       hits.forEach(([line, at]) => add(file, fileOrder, 4, line, at, file.kind === 'html' && hits.length === 1 ? 'med' : 'low'));
     }
+  });
+
+  // Report data (chart marks, legend labels, table cells, data-report-field): the datum in data.js is the source.
+  // These come first (step 0, in emission order) so they outrank class-only css matches.
+  const dataFiles = files.filter(file => file.kind === 'js' || file.kind === 'json');
+  findReportHints(dataFiles, selection, { deadline: Math.max(deadline, Date.now() + 150) }).forEach((datum, index) => {
+    const file = files.find(candidate => candidate.name === datum.file);
+    if (!file) return;
+    const lineText = file.lines[datum.hint.lineIndex] ?? '';
+    found.push({ file: file.name, line: datum.hint.lineIndex + 1, confidence: datum.hint.confidence, snippet: snippetAround(lineText.endsWith('\r') ? lineText.slice(0, -1) : lineText, datum.hint.col), step: index * 0.01, fileOrder: files.indexOf(file) });
   });
 
   // Best candidate per file:line, then rank by confidence, step, file order, line.
