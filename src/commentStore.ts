@@ -234,6 +234,8 @@ interface State {
   readonly fileSig: string;
   /** The bytes on disk parsed cleanly, so they are a good candidate for the previous generation. */
   readonly diskValid: boolean;
+  /** Size of comments.json as read or last written; a write that does not grow it is allowed past the write cap. */
+  readonly bytes?: number;
 }
 
 const REASON_RANK: Record<ArtifactCommentsChangeReason, number> = { local: 0, 'send-result': 1, external: 2, recovered: 3 };
@@ -369,8 +371,12 @@ export function createCommentStore(options: CommentStoreOptions): CommentStore {
         if (migration.status === 'invalid') corrupt = true;
         else {
           migratedFrom = migration.migratedFrom;
-          normalized = normalizeCommentsFile(migration.value, now().getTime());
-          if (!normalized.ok) corrupt = true;
+          try {
+            normalized = normalizeCommentsFile(migration.value, now().getTime());
+          } catch {
+            normalized = null;
+          }
+          if (normalized === null || !normalized.ok) corrupt = true;
           else if (normalized.report.shaMismatch && normalized.report.dropped > 0) corrupt = true;
         }
       }
@@ -398,14 +404,14 @@ export function createCommentStore(options: CommentStoreOptions): CommentStore {
           if (errno(error) !== 'EEXIST') return this.readOnlyState('Design could not save a backup before upgrading comments.json, so comments are read-only.', finalFile, probe, read.sig);
         }
       }
-      if (!needsQuarantine) return { health: 'ok', notice: null, file: finalFile, probe, fileSig: read.sig, diskValid: true };
+      if (!needsQuarantine) return { health: 'ok', notice: null, file: finalFile, probe, fileSig: read.sig, diskValid: true, bytes: read.bytes.length };
       let name: string;
       try {
         name = await this.quarantine(read.bytes);
       } catch {
         return this.readOnlyState('Design could not save a safe copy of a damaged comments file, so comments are read-only.', finalFile, probe, read.sig);
       }
-      return { health: 'recovered', notice: clip(`${notes.join(' ')} The original was saved as ${name}.`.trim()), file: finalFile, probe, fileSig: read.sig, diskValid: false };
+      return { health: 'recovered', notice: clip(`${notes.join(' ')} The original was saved as ${name}.`.trim()), file: finalFile, probe, fileSig: read.sig, diskValid: false, bytes: read.bytes.length };
     }
 
     private readOnlyState(notice: string, file: CommentsFile, probe: string, fileSig: string): State {
@@ -486,7 +492,7 @@ export function createCommentStore(options: CommentStoreOptions): CommentStore {
     private async quarantine(bytes: Buffer): Promise<string> {
       const name = await this.quarantineName();
       await writeExclusive(ops, path.join(this.dir, name), bytes);
-      await this.pruneQuarantine();
+      await this.pruneQuarantine(name);
       return name;
     }
 
@@ -494,11 +500,12 @@ export function createCommentStore(options: CommentStoreOptions): CommentStore {
     private async quarantineByRename(): Promise<string> {
       const name = await this.quarantineName();
       await ops.rename(this.commentsPath, path.join(this.dir, name));
-      await this.pruneQuarantine();
+      await this.pruneQuarantine(name);
       return name;
     }
 
-    private async pruneQuarantine(): Promise<void> {
+    /** Keeps the copy just written plus the newest others, whatever their stamps say (a skewed or planted name must not evict it). */
+    private async pruneQuarantine(justWritten: string): Promise<void> {
       try {
         const found: { name: string; stamp: string; n: number }[] = [];
         for (const name of await ops.readdir(this.dir)) {
@@ -506,7 +513,8 @@ export function createCommentStore(options: CommentStoreOptions): CommentStore {
           if (match) found.push({ name, stamp: match[1], n: match[2] ? Number(match[2]) : 0 });
         }
         found.sort((a, b) => (a.stamp < b.stamp ? -1 : a.stamp > b.stamp ? 1 : a.n - b.n));
-        for (const old of found.slice(0, Math.max(0, found.length - QUARANTINE_KEEP))) {
+        const others = found.filter((f) => f.name !== justWritten);
+        for (const old of others.slice(0, Math.max(0, others.length - (QUARANTINE_KEEP - 1)))) {
           const target = path.join(this.dir, old.name);
           const stat = await lstatOrNull(ops, target);
           if (stat !== null && stat.isFile() && !stat.isSymbolicLink()) await ops.rm(target, { force: true });
@@ -602,7 +610,12 @@ export function createCommentStore(options: CommentStoreOptions): CommentStore {
     }
 
     protectedSelectionIds(): Promise<string[]> {
-      return this.locked(async () => this.state.file.comments.map((c) => c.selectionId));
+      return this.locked(async () => {
+        // An answer from a store that could not read (or had to repair) its file would be incomplete, and a
+        // caller feeding it to pruneSelections would delete pinned selections. Refuse; the caller skips pruning.
+        if (this.state.health !== 'ok') throw new StoreError('unavailable', 'The comment list is not fully known, so selections must not be pruned.');
+        return this.state.file.comments.map((c) => c.selectionId);
+      });
     }
 
     // ---- writes ----------------------------------------------------------------------------
@@ -646,7 +659,8 @@ export function createCommentStore(options: CommentStoreOptions): CommentStore {
         for (let attempt = 0; attempt < MAX_WRITE_ATTEMPTS; attempt += 1) {
           if (candidate.comments.length > MAX_COMMENTS) return rejected('limit', 'Resolve or delete older comments to add more.');
           const serialized = this.serialize(candidate, base.file.rev + 1, base.file.storeId);
-          if (Buffer.byteLength(serialized.text) > maxWrite) return rejected('limit', 'The comments file would become too large. Delete some comments first.');
+          const size = Buffer.byteLength(serialized.text);
+          if (size > maxWrite && size >= (base.bytes ?? 0)) return rejected('limit', 'The comments file would become too large. Delete some comments first.');
           const dir = await ensureRealDirectory(ops, real, SIDECAR_DIR);
           const tmp = path.join(dir, `comments.${hex(8)}.tmp`);
           temps.push(tmp);
@@ -662,7 +676,7 @@ export function createCommentStore(options: CommentStoreOptions): CommentStore {
             const other = this.parseFresh(fresh.bytes);
             if (other === null) { await this.reload(); return rejected('failed', 'comments.json changed while saving. Try again.'); }
             candidate = mergeBodies(candidate, other, now().getTime());
-            base = { ...base, file: other.file, fileSig: freshSig, diskValid: true };
+            base = { ...base, file: other.file, fileSig: freshSig, diskValid: true, bytes: fresh.bytes.length };
             merged = true;
             continue;
           }
@@ -678,7 +692,7 @@ export function createCommentStore(options: CommentStoreOptions): CommentStore {
 
           const probe = await this.probe();
           const stat = await lstatOrNull(ops, this.commentsPath);
-          this.state = { health: this.state.health, notice: this.state.notice, file: serialized.file, probe, fileSig: stat === null ? 'missing' : sigOf(stat), diskValid: true };
+          this.state = { health: this.state.health, notice: this.state.notice, file: serialized.file, probe, fileSig: stat === null ? 'missing' : sigOf(stat), diskValid: true, bytes: size };
           this.revision += 1;
           this.queueChange(merged ? 'external' : reason, merged ? 'all' : ids);
           return accepted(true);
@@ -902,7 +916,7 @@ export function createCommentStore(options: CommentStoreOptions): CommentStore {
   return {
     async open(target: OpenTarget): Promise<CommentRootHandle> {
       const handle = new CommentRoot(target.root, target.artifactId);
-      await handle.init();
+      await withMutex(target.root, () => handle.init());
       return handle;
     },
   };
