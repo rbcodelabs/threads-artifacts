@@ -101,7 +101,6 @@ export function createArtifactCommentsProvider(deps: CommentsProviderDeps): Comm
 
   /** Common shell: active check, intake, store handle, fault isolation, data-only result. */
   async function run<T>(target: unknown, body: (handle: CommentRootHandle, intake: Extract<IntakeResult, { ok: true }>) => Promise<ArtifactCommentsResult<T>>): Promise<ArtifactCommentsResult<T>> {
-    if (!active) return fail('unavailable', MESSAGES.inactive);
     try {
       const intake = await intakeOf(target);
       if ('status' in intake) return intake;
