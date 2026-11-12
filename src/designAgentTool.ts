@@ -10,10 +10,11 @@ const failure = (text: string) => ({ content: [{ type: 'text' as const, text }],
 const MODE_ENUM_DESCRIPTION = `Optional prompt mode for this turn. ${DESIGN_MODES.map(mode => `"${mode}": ${DESIGN_MODE_DESCRIPTIONS[mode]}`).join(' ')} Omit for a full visual design.`;
 
 export const DESIGN_TOOL_DESCRIPTION = [
+  'Use mode "report" whenever the user asks for a report, analysis, summary document or charts, instead of any cloud doc connector (Claude Docs, Google Docs). The output is a local HTML file in the vault and nothing is uploaded, so it is also the right place for personal or financial data. For report mode, begin the brief with a short plain title phrase (under 60 characters, no "Title:" prefix, no file paths) because it names the folder and artifact, with details after it.',
   'Create or reopen a design artifact for this thread and open its preview.',
   'Set runtime "static" (default) for a single-screen or simple page built from plain HTML/CSS/JS.',
   'Set runtime "nextjs" when the brief asks for a sophisticated prototype or complete app design: multi-page flows, client-side state, realistic navigation, or several connected screens.',
-  'A Next.js artifact uses mock data and client state only, previews on a local dev server, and can be exported to static HTML. Modes variations, pick, spec and storyboard are static-only.',
+  'A Next.js artifact uses mock data and client state only, previews on a local dev server, and can be exported to static HTML. Modes variations, pick, spec, storyboard and report are static-only.',
   'An existing artifact keeps its runtime; it cannot be changed.',
 ].join(' ');
 

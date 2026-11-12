@@ -22,11 +22,12 @@ describe('Design slash command contribution', () => {
   it('describes both surfaces including modes', () => {
     const { command } = fixture();
     expect(command.name).toBe('design');
-    expect(command.thread?.description).toBe('Create or revise a live UI artifact (static HTML by default, --nextjs for a full app prototype): /design [--nextjs] <brief> or /design [--nextjs] <mode>: <brief> (wireframe, states, variations, pick, spec, storyboard)');
-    expect(command.dispatch?.description).toBe('Dispatch a thread with a live UI artifact (static HTML by default, --nextjs for a full app prototype): /design [--nextjs] <brief> or /design [--nextjs] <mode>: <brief> (wireframe, states, variations, pick, spec, storyboard)');
+    expect(command.thread?.description).toBe('Create or revise a live UI artifact (static HTML by default, --nextjs for a full app prototype). For a report, analysis or charts use /design report: <brief> (local HTML in the vault, nothing uploaded). /design [--nextjs] <brief> or /design [--nextjs] <mode>: <brief> (wireframe, states, variations, pick, spec, storyboard, report)');
+    expect(command.thread?.description).toContain('/design report:');
+    expect(command.dispatch?.description).toBe('Dispatch a thread with a live UI artifact (static HTML by default, --nextjs for a full app prototype). For a report, analysis or charts use /design report: <brief> (local HTML in the vault, nothing uploaded). /design [--nextjs] <brief> or /design [--nextjs] <mode>: <brief> (wireframe, states, variations, pick, spec, storyboard, report)');
   });
 
-  it('offers all 6 mode keywords with their colons as thread argument completions', () => {
+  it('offers all 7 mode keywords with their colons as thread argument completions', () => {
     const { command } = fixture();
     expect(command.thread?.argCompletions).toEqual([
       { name: 'wireframe:', description: DESIGN_MODE_DESCRIPTIONS.wireframe },
@@ -35,6 +36,7 @@ describe('Design slash command contribution', () => {
       { name: 'pick:', description: DESIGN_MODE_DESCRIPTIONS.pick },
       { name: 'spec:', description: DESIGN_MODE_DESCRIPTIONS.spec },
       { name: 'storyboard:', description: DESIGN_MODE_DESCRIPTIONS.storyboard },
+      { name: 'report:', description: DESIGN_MODE_DESCRIPTIONS.report },
     ]);
   });
 
@@ -45,11 +47,12 @@ describe('Design slash command contribution', () => {
       { name: 'states:', description: DESIGN_MODE_DESCRIPTIONS.states },
       { name: 'variations:', description: DESIGN_MODE_DESCRIPTIONS.variations },
       { name: 'storyboard:', description: DESIGN_MODE_DESCRIPTIONS.storyboard },
+      { name: 'report:', description: DESIGN_MODE_DESCRIPTIONS.report },
     ]);
     const names = command.dispatch?.argCompletions?.map(c => c.name) ?? [];
     expect(names).not.toContain('pick:');
     expect(names).not.toContain('spec:');
-    expect(command.dispatch?.argCompletions).toHaveLength(4);
+    expect(command.dispatch?.argCompletions).toHaveLength(5);
   });
 
   it('requires a brief for an empty thread', async () => {
