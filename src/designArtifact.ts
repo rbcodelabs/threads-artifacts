@@ -366,7 +366,7 @@ const ELEMENT_COMMENT_RULES = `- Element comments: a later message may begin wit
 
 export function designKickoffMessage(artifact: DesignArtifact, brief: string, mode?: DesignMode, guidance?: DesignGuidance): string {
   const guidanceSection = guidance
-    ? `Project design guidance (from ${guidance.path} — authoritative; overrides the generic design intent below):\n${guidance.content.trim()}\n${THREADS_DESIGN_FOLDER_RULE}\n\n`
+    ? `Project design guidance (from ${guidance.path} — authoritative; overrides the generic design intent below):\n${guidance.content.trim()}\n\n`
     : '';
   const directionBullet = guidance
     ? '- Follow the project design guidance above. Do not introduce new colors, type, spacing, radii or component styles beyond it unless the brief explicitly asks to explore a new look. For variations, differ only in layout, flow, hierarchy and interaction, not visual styling.'
