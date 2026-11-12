@@ -159,7 +159,7 @@ export async function findSourceHints(root: string, selection: ElementSelection,
   // Report data (chart marks, legend labels, table cells, data-report-field): the datum in data.js is the source.
   // These come first (step 0, in emission order) so they outrank class-only css matches.
   const dataFiles = files.filter(file => file.kind === 'js' || file.kind === 'json');
-  findReportHints(dataFiles, selection).forEach((datum, index) => {
+  findReportHints(dataFiles, selection, { deadline: Math.max(deadline, Date.now() + 150) }).forEach((datum, index) => {
     const file = files.find(candidate => candidate.name === datum.file);
     if (!file) return;
     const lineText = file.lines[datum.hint.lineIndex] ?? '';

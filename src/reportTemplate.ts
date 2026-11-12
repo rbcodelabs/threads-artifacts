@@ -298,8 +298,9 @@ export const REPORT_JS = `/* Dependency-free SVG charts for report mode. Reads w
       if (k % stride !== 0) { return; }
       var shortened = name.length > 14;
       var shown = shortened ? name.slice(0, 13) + '...' : name;
-      // The tick text is its own label (no nested title, which doubled the text in the accessible name).
-      out.push('<text class="tick-x" data-category="' + esc(name) + '"' + (shortened ? ' aria-label="' + esc(name) + '"' : '') + ' x="' + cx(k).toFixed(1) + '" y="' + (H - M.bottom + 20) + '">' + esc(shown) + '</text>');
+      // The tick text is its own label. A title (hover tooltip) exists only when the visible text was shortened, so the
+      // full name stays reachable and a label shown in full is never doubled in its accessible name.
+      out.push('<text class="tick-x" data-category="' + esc(name) + '" x="' + cx(k).toFixed(1) + '" y="' + (H - M.bottom + 20) + '">' + esc(shown) + (shortened ? '<title>' + esc(name) + '</title>' : '') + '</text>');
     });
     var axisY = Math.min(Math.max(y(0), M.top), M.top + plotH).toFixed(1);
     out.push('<line class="axis" x1="' + M.left + '" x2="' + (W - M.right) + '" y1="' + axisY + '" y2="' + axisY + '"/>');

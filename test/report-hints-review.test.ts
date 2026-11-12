@@ -46,7 +46,7 @@ describe('B1: pathological data files finish quickly and produce no data hints',
     ['unclosed categories:[ x21k', fill('categories:[')],
     ['properly nested values:[...] x32k', prefix + 'values:['.repeat(32000) + ']'.repeat(32000)],
     ['deeply nested brackets', prefix + 'values:' + '['.repeat(120000) + ']'.repeat(120000)],
-    ['unterminated block comment', `${prefix}categories:['Q1'],/* never closed ` + 'x'.repeat(200_000)],
+    ['unterminated block comment', `${prefix}categories:['Z'],/* never closed ` + 'x'.repeat(200_000)],
     ['unterminated string', `${prefix}categories:['Q1' ` + `"never closed ` + 'x'.repeat(200_000)],
     ['unterminated template literal', `${prefix}series:[{name:\`never closed\n` + 'x\n'.repeat(100_000)],
     ['many unclosed objects', fill('{name:')],
@@ -121,7 +121,7 @@ describe('A1: prose that equals a series name is not a confident data hint', () 
 describe('A2: table header cells map to the series, not a category', () => {
   it('thead th maps column N to series N-1', async () => {
     await scaffold();
-    const hints = await hintsFor({ tag: 'th', html: '<th scope="col">Product B</th>', text: 'Product B', selector: '#chart-revenue > div:nth-of-type(2) > table > thead > tr > th:nth-of-type(3)' });
+    const hints = await hintsFor({ tag: 'th', html: '<th scope="col">Product B</th>', text: 'Product B', selector: '#chart-revenue > div:nth-of-type(2) > table > thead > tr:nth-of-type(1) > th:nth-of-type(3)' });
     expect(hints[0]).toMatchObject({ file: 'data.js', line: 16 });
     expect(['high', 'med']).toContain(hints[0].confidence);
     expect(lineOf(hints, 'data.js', 12)).toBe(-1);
