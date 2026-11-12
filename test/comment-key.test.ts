@@ -132,7 +132,7 @@ describe('plugin data guard: the only saveData path', () => {
     await guard.saveData({ theme: 'light' });
     expect(storage.data).toMatchObject({ theme: 'light' });
     expect(storedKey(storage)).toBe(hexOf(key));
-    await guard.saveData(null);
+    await expect(guard.saveData(null)).rejects.toMatchObject({ code: 'invalid' });
     expect(storedKey(storage)).toBe(hexOf(key));
   });
 

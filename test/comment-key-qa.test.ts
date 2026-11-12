@@ -214,7 +214,8 @@ describe('guard: hung and failing storage', () => {
     let called = false;
     const guard = createPluginDataGuard({ loadData: never, saveData: m.storage.saveData }, { timeoutMs: 20 });
     await expect(guard.saveData({ a: 1 })).rejects.toMatchObject({ code: 'timeout' });
-    await expect(guard.update(() => { called = true; return {}; })).rejects.toMatchObject({ code: 'timeout' });
+    // The hung loadData is still unsettled: later calls wait for it for a bounded time, then refuse as busy.
+    await expect(guard.update(() => { called = true; return {}; })).rejects.toMatchObject({ code: 'busy' });
     expect(called).toBe(false);
     expect(m.attempts).toBe(0);
   });
@@ -254,22 +255,28 @@ describe('guard: hung and failing storage', () => {
     const m = memory({ [COMMENTS_KEY_FIELD]: VALID });
     const guard = createPluginDataGuard(m.storage);
     const shapes: unknown[] = [{}, null, undefined, 'x', 7, [], [1], { [COMMENTS_KEY_FIELD]: null }, { [COMMENTS_KEY_FIELD]: 'evil' }, { [COMMENTS_KEY_FIELD]: { v: 1, key: 'f'.repeat(64) } }, JSON.parse('{"__proto__":{"x":1}}')];
-    for (let i = 0; i < 500; i += 1) await guard.saveData(shapes[i % shapes.length]);
+    for (let i = 0; i < 500; i += 1) await guard.saveData(shapes[i % shapes.length]).catch(() => undefined);
     expect(m.data[COMMENTS_KEY_FIELD]).toEqual(VALID);
     expect(hexOf(await guard.getKey())).toBe(VALID.key);
   });
 
-  it('observed: saveData of a non-object replaces the settings with {} (key kept); callers are expected to pass an object', async () => {
+  it('saveData of a non-object and update returning a non-object reject (invalid) instead of reducing the settings to {}', async () => {
     const m = memory({ theme: 'dark', [COMMENTS_KEY_FIELD]: VALID });
-    await createPluginDataGuard(m.storage).saveData('oops');
-    expect(m.data).toEqual({ [COMMENTS_KEY_FIELD]: VALID });
+    const guard = createPluginDataGuard(m.storage);
+    for (const bad of ['oops', 7, null, undefined, [], [1], true]) await expect(guard.saveData(bad)).rejects.toMatchObject({ code: 'invalid' });
+    await expect(guard.update(() => undefined as never)).rejects.toMatchObject({ code: 'invalid' });
+    await expect(guard.update(() => 'x' as never)).rejects.toMatchObject({ code: 'invalid' });
+    await expect(guard.update(() => [] as never)).rejects.toMatchObject({ code: 'invalid' });
+    expect(m.attempts).toBe(0);
+    expect(m.data).toEqual({ theme: 'dark', [COMMENTS_KEY_FIELD]: VALID });
   });
 
-  it('observed: an injected generate() of the wrong length persists a key the next start reads as malformed', async () => {
+  it('an injected generate() of the wrong length is rejected (invalid) before anything is saved', async () => {
     const m = memory({});
-    const key = await createPluginDataGuard(m.storage, { generate: () => new Uint8Array(16).fill(3) }).getKey();
-    expect(key).toHaveLength(16);
-    await expect(createPluginDataGuard(m.storage).getKey()).rejects.toMatchObject({ code: 'malformed' });
+    await expect(createPluginDataGuard(m.storage, { generate: () => new Uint8Array(16).fill(3) }).getKey()).rejects.toMatchObject({ code: 'invalid' });
+    await expect(createPluginDataGuard(m.storage, { generate: () => new Uint8Array(33) }).getKey()).rejects.toMatchObject({ code: 'invalid' });
+    expect(m.attempts).toBe(0);
+    expect(m.data).toEqual({});
   });
 
   it('a throwing generate() rejects that call only', async () => {
@@ -296,7 +303,7 @@ describe('guard: hung and failing storage', () => {
     expect(restarted, 'the key on disk after the late write differs from the key used this session').toBe(handedOut);
   });
 
-  it.fails('a timed-out settings save that lands late does not revert a newer settings save (known limit: a hung write cannot be cancelled; same root cause as the BUG above)', async () => {
+  it('a timed-out settings save that lands late does not revert a newer settings save', async () => {
     const m = memory({ [COMMENTS_KEY_FIELD]: VALID }, { save: (n) => (n === 1 ? sleep(120) : undefined) });
     const guard = createPluginDataGuard(m.storage, { timeoutMs: 30 });
     await expect(guard.saveData({ v: 'old' })).rejects.toMatchObject({ code: 'timeout' });
