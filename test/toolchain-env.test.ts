@@ -325,7 +325,7 @@ describe('(i) PATH de-duplication and ordering', () => {
   it('never throws when the filesystem misbehaves', async () => {
     const toolchain = createToolchainEnv({
       env: { PATH: GUI_PATH }, platform: 'darwin', homedir: HOME, probe: noProbe,
-      fs: { access: async () => { throw new Error('EIO'); }, readdir: async () => { throw new Error('EIO'); } },
+      fs: { access: async () => { throw new Error('EIO'); }, readdir: async () => { throw new Error('EIO'); }, stat: async () => { throw new Error('EIO'); } },
     });
     expect(await toolchain.path()).toBe(GUI_PATH);
     expect((await toolchain.resolveNpm()).ok).toBe(false);
