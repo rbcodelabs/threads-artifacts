@@ -163,7 +163,7 @@ export function createArtifactCommentsProvider(deps: CommentsProviderDeps): Comm
         if (ctx?.signal?.aborted) return fail('unavailable', MESSAGES.aborted);
 
         // A vault-read pin never has a PNG, even if bytes were sent, and never a text anchor (the validator already blanks it).
-        const png = request.screenshot && !intake.vaultRead ? request.screenshot.bytes : null;
+        const png = request.screenshot ? request.screenshot.bytes : null;
         let files;
         try {
           files = await writeSelectionFiles({
