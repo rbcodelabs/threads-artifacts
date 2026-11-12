@@ -95,7 +95,7 @@ export function createArtifactFeedbackHandler(deps: ArtifactFeedbackHandlerDeps)
     // Retention is best-effort and never throws; the file just written is protected.
     // Selections that a pinned comment references are exempt. If they cannot be determined, nothing is pruned.
     const protectIds = await protectedIdsFor(intake.root, intake.manifest.id);
-    if (protectIds !== null) await pruneSelections({ root: intake.root, keep: SELECTION_RETENTION, protectId: selection.selectionId, protectIds });
+    await pruneSelections({ root: intake.root, keep: SELECTION_RETENTION, protectId: selection.selectionId, protectIds: protectIds ?? [] });
     if (signal.aborted) return rejected('unavailable', MESSAGES.cancelled);
 
     const escalation = deps.escalation?.() ?? { keywords: [], known: true };
