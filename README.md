@@ -76,12 +76,14 @@ Modes on Next.js: `wireframe:` and `states:` work (the mode instructions are map
 
 Next.js designs install their dependencies once with `npm` and run `next` with Node. If you see "npm was not found" (or "is Node.js/npm installed and on PATH?"), the usual cause is how Geode was launched: an app started from the Dock or Finder inherits only `PATH=/usr/bin:/bin:/usr/sbin:/sbin`, which does not contain Homebrew, fnm, nvm, Volta or other Node installs, while a terminal launch has your full PATH.
 
-The plugin already compensates: it appends well-known locations that exist (Homebrew, `/usr/local/bin`, Volta, fnm, mise and asdf shims, the newest nvm version; on Windows `%ProgramFiles%\nodejs` and `%APPDATA%\npm`) and the PATH reported once by your login shell (`$SHELL -ilc`, 5 s timeout, bash, zsh, fish, sh, dash or ksh only; failures are ignored). The original PATH entries always stay first. If npm is still not found, the error lists what was searched and the PATH Geode started with. Then do one of:
+The plugin already compensates: it appends well-known locations that exist (Homebrew, `/usr/local/bin`, Volta, fnm, mise and asdf shims, the newest nvm version; on Windows `%ProgramFiles%\nodejs` and `%APPDATA%\npm`) The original PATH entries always stay first (relative and empty entries are dropped). Only if npm is still not found does it ask your login shell once for its PATH (`$SHELL -ilc`, which runs your interactive shell startup files, so it is never done when it is not needed): bash, zsh, fish, sh, dash or ksh only, an executable `$SHELL`, a 5 s limit that also kills the shell's process group, and any failure or hang is ignored. If npm is still not found, the error lists what was searched and the PATH Geode started with. Then do one of:
 
 - install Node.js (https://nodejs.org);
 - start Geode from a terminal;
 - on macOS, run `launchctl setenv PATH "/opt/homebrew/bin:$PATH"` and restart Geode;
 - set the environment variable `THREADS_DESIGN_NPM` to the absolute path of your `npm` (the directory is added to PATH so its `node` is found).
+
+Known limitations: the newest nvm version found under `~/.nvm/versions/node` may differ from the Node you use by default (nvm's default alias is not read), so npm and node can come from a different version than your terminal's; and on Windows `npm.cmd` is spawned without a shell, which newer Node versions can reject with EINVAL (this predates the PATH fix); in either case set `THREADS_DESIGN_NPM` or start Geode from a terminal.
 
 ### Next.js artifacts
 
