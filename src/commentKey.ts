@@ -90,17 +90,22 @@ export function createPluginDataGuard(storage: PluginDataStorage, options: Guard
   const maxQueueWaitMs = options.maxQueueWaitMs ?? timeoutMs * 6;
   let cached: Uint8Array | null = null;
   let tail: Promise<void> = Promise.resolve();
-  /** The latest save that timed out and has not settled yet. */
-  let stalledWrite: Promise<void> | null = null;
+  /** The latest save that timed out and has not settled yet. `since` is when we gave up on it. */
+  let stalledWrite: { readonly settled: Promise<void>; readonly since: number; refused: boolean } | null = null;
 
   const waitForStalledWrite = async (): Promise<void> => {
     const stalled = stalledWrite;
     if (stalled === null) return;
+    const busy = () => new InstallKeyError('busy', 'An earlier save of plugin data is still in progress.');
+    // Once one caller has been refused for this stall, nobody else waits: the bound is per stall, not per caller.
+    if (stalled.refused) throw busy();
+    const remaining = maxQueueWaitMs - (Date.now() - stalled.since);
+    if (remaining <= 0) { stalled.refused = true; throw busy(); }
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const gaveUp = new Promise<'busy'>((resolve) => { timer = setTimeout(() => resolve('busy'), maxQueueWaitMs); });
-    const outcome = await Promise.race([stalled.then(() => 'settled' as const), gaveUp]);
+    const gaveUp = new Promise<'busy'>((resolve) => { timer = setTimeout(() => resolve('busy'), remaining); });
+    const outcome = await Promise.race([stalled.settled.then(() => 'settled' as const), gaveUp]);
     if (timer !== undefined) clearTimeout(timer);
-    if (outcome === 'busy' && stalledWrite === stalled) throw new InstallKeyError('busy', 'An earlier save of plugin data is still in progress.');
+    if (outcome === 'busy' && stalledWrite === stalled) { stalled.refused = true; throw busy(); }
   };
 
   /** Runs one job at a time. A failed or timed-out job never blocks the ones after it. */
@@ -122,8 +127,8 @@ export function createPluginDataGuard(storage: PluginDataStorage, options: Guard
       const timer = setTimeout(() => {
         if (code === 'unwritable') {
           // A save we gave up on may still land later: hold the queue until it settles.
-          const settled = started.then(() => undefined, () => undefined).then(() => { if (stalledWrite === settled) stalledWrite = null; });
-          stalledWrite = settled;
+          const stall: { readonly settled: Promise<void>; readonly since: number; refused: boolean } = { settled: started.then(() => undefined, () => undefined).then(() => { if (stalledWrite === stall) stalledWrite = null; }), since: Date.now(), refused: false };
+          stalledWrite = stall;
         }
         reject(new InstallKeyError('timeout', `Reading or saving plugin data timed out (${what}).`));
       }, timeoutMs);
