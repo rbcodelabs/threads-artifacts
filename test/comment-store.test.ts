@@ -1138,6 +1138,65 @@ describe('subscribe and the stat poll', () => {
   });
 });
 
+describe('install key failures never hang or regenerate', () => {
+  const never = () => new Promise<never>(() => undefined);
+
+  it('a signing key that never loads makes the store unavailable within keyTimeoutMs, and later calls do not hang either', async () => {
+    const started = Date.now();
+    const h = await openWith({ keys: { getKey: never }, keyTimeoutMs: 30 });
+    expect(Date.now() - started).toBeLessThan(2000);
+    const snap = await h.snapshot();
+    expect(snap.health).toBe('unavailable');
+    expect(reason(await h.create(pinDraft(1)))).toBe('unavailable');
+    await h.poll();
+    await expect(fs.readdir(root)).resolves.toEqual([]);
+  });
+
+  it('recovers once the key becomes available again (the failure is not cached)', async () => {
+    let up = false;
+    const h = await openWith({ keys: { getKey: async () => { if (!up) throw new Error('plugin data unreadable'); return KEY; } }, keyTimeoutMs: 30 });
+    expect((await h.snapshot()).health).toBe('unavailable');
+    up = true;
+    expect((await h.snapshot()).health).toBe('ok');
+    ok(await h.create(pinDraft(1)));
+  });
+
+  it('an install key that fails closed (malformed in plugin data) leaves comments.json untouched and never signs with a new key', async () => {
+    await writeDisk(fileOf([stored(1)]));
+    const before = fsSync.readFileSync(file(), 'utf8');
+    const { createPluginDataGuard } = await import('../src/commentKey');
+    const data = { commentsInstallKey: { v: 1, key: 'bad' } };
+    const guard = createPluginDataGuard({ loadData: async () => structuredClone(data), saveData: async () => { throw new Error('must not write'); } });
+    const h = await openWith({ keys: guard });
+    expect((await h.snapshot()).health).toBe('unavailable');
+    expect(reason(await h.create(pinDraft(2)))).toBe('unavailable');
+    expect(reason(await h.adopt([cmtId(1)]))).toBe('unavailable');
+    expect(fsSync.readFileSync(file(), 'utf8')).toBe(before);
+  });
+
+  it('overlapping polls do not queue up behind a slow filesystem: a second poll returns while the first is in flight', async () => {
+    const seed = await openWith();
+    ok(await seed.create(pinDraft(1)));
+    seed.dispose();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let lstats = 0;
+    let armed = false;
+    const real = defaultStoreFsOps;
+    const ops = { ...real, lstat: async (p: string) => { if (armed) { lstats += 1; await gate; } return real.lstat(p); } } as unknown as CommentStoreOptions['ops'];
+    const h = await openWith({ ops });
+    armed = true;
+    const first = h.poll();
+    await new Promise((r) => setTimeout(r, 10));
+    const afterFirst = lstats;
+    await Promise.race([h.poll(), new Promise((_, rej) => setTimeout(() => rej(new Error('second poll waited for the first')), 500))]);
+    await Promise.race([h.poll(), new Promise((_, rej) => setTimeout(() => rej(new Error('third poll waited for the first')), 500))]);
+    expect(lstats).toBe(afterFirst);
+    release();
+    await first;
+  });
+});
+
 describe('ids are validated before any path is built', () => {
   it('never issues a filesystem call that mentions a hostile id', async () => {
     const log: Call[] = [];
