@@ -196,7 +196,7 @@ export async function pruneSelections(input: PruneInput, ops: FsOps = defaultOps
     }
 
     const exempt = new Set<string>();
-    for (const id of input.protectIds ?? []) if (typeof id === 'string' && SELECTION_ID_PATTERN.test(id)) exempt.add(id);
+    // mutated: protectIds ignored
     const newestFirst = [...groups.entries()].filter(([id]) => !exempt.has(id)).sort((a, b) => b[1].newest - a[1].newest || (a[0] < b[0] ? 1 : -1));
     const keepIds = new Set(newestFirst.slice(0, Math.max(0, input.keep)).map(([id]) => id));
     if (input.protectId) keepIds.add(input.protectId);
