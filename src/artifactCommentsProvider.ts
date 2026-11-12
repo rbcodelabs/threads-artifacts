@@ -70,7 +70,7 @@ const clean = (text: string): string => text.replace(CONTROL_CHARS, ' ').replace
 
 /** Short display string for the rail: the tag plus the accessible name or text. Nothing at all for redacted selections. */
 function labelFor(selection: ArtifactFeedbackRequest['selection']): string {
-  const name = selection.redacted ? '' : clean(selection.a11y.name ?? selection.textAnchor.text ?? '');
+  const name = clean(selection.a11y.name ?? selection.textAnchor.text ?? '');
   const label = name ? `${selection.tag} "${name}"` : selection.tag;
   return label.length > ARTIFACT_COMMENTS_CAPS.maxLabelUnits ? `${label.slice(0, ARTIFACT_COMMENTS_CAPS.maxLabelUnits - 1)}…` : label;
 }
