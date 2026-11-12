@@ -254,7 +254,7 @@ export async function readSelectionJson(root: string, selectionId: string, ops: 
         if (bytesRead === 0) break;
         filled += bytesRead;
       }
-      return filled > MAX_SELECTION_JSON_BYTES ? null : buffer.subarray(0, filled).toString('utf8');
+      return buffer.subarray(0, filled).toString('utf8');
     } finally {
       await handle.close().catch(() => undefined);
     }
