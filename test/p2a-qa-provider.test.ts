@@ -3,7 +3,7 @@ import * as fsSync from 'node:fs';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createArtifactCommentsProvider, type CommentsProviderController } from '../src/artifactCommentsProvider';
 import { createCommentStore, type CommentStore } from '../src/commentStore';
 import { buildDesignManifest } from '../src/designArtifact';
@@ -570,6 +570,7 @@ describe('provider inert before activation (T12)', () => {
     let keyReads = 0;
     const fake = createFakeApi();
     fake.addThread('t1', { artifacts: [{ providerId: 'agent-threads.design', kind: 'design-static', schemaVersion: 2, id: 'design-t1', title: 'Landing', data: {}, storageRoot: root }] });
+    const threadsGet = vi.spyOn(fake.api.threads, 'get');
     const inert = createArtifactCommentsProvider({ api: fake.api, vaultRoot: () => base, now: () => NOW_MS, store: createCommentStore({ keys: { getKey: async () => { keyReads++; return KEY; } } }) });
     const p = inert.provider;
     const results = [
@@ -586,6 +587,7 @@ describe('provider inert before activation (T12)', () => {
     await settle();
     expect(await inert.protectedSelectionIds(root, 'design-t1')).toBeNull();
     expect(keyReads).toBe(0);
+    expect(threadsGet, 'an inactive provider must not even resolve the target (no Agent Threads calls)').not.toHaveBeenCalled();
     expect(exists(sidecar())).toBe(false);
     inert.dispose();
   });
