@@ -55,15 +55,15 @@ export function reportHtml(): string {
     <section aria-labelledby="sample-revenue">
       <h2 id="sample-revenue">Sample stacked chart</h2>
       <p>Placeholder section using synthetic sample data from data.js.</p>
-      <figure class="chart" data-chart="revenue"></figure>
+      <figure class="chart" id="chart-revenue" data-chart="revenue"></figure>
     </section>
     <section aria-labelledby="sample-headcount">
       <h2 id="sample-headcount">Sample grouped chart</h2>
-      <figure class="chart" data-chart="headcount"></figure>
+      <figure class="chart" id="chart-headcount" data-chart="headcount"></figure>
     </section>
     <section aria-labelledby="sample-trend">
       <h2 id="sample-trend">Sample line chart</h2>
-      <figure class="chart" data-chart="trend"></figure>
+      <figure class="chart" id="chart-trend" data-chart="trend"></figure>
     </section>
     <section aria-labelledby="assumptions">
       <h2 id="assumptions">Assumptions and caveats</h2>
@@ -287,7 +287,7 @@ export const REPORT_JS = `/* Dependency-free SVG charts for report mode. Reads w
     function cx(k) { return M.left + band * (k + 0.5); }
     var out = [];
     var label = (spec.title || 'Chart') + '. ' + series.length + ' series across ' + categories.length + ' categories.';
-    out.push('<svg class="chart-svg" viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-labelledby="' + esc(id) + '-t">');
+    out.push('<svg class="chart-svg" id="' + esc(id) + '-svg" viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-labelledby="' + esc(id) + '-t">');
     out.push('<title id="' + esc(id) + '-t">' + esc(label) + '</title>');
     scale.ticks.forEach(function (t) {
       out.push('<line class="grid" x1="' + M.left + '" x2="' + (W - M.right) + '" y1="' + y(t).toFixed(1) + '" y2="' + y(t).toFixed(1) + '"/>');
@@ -296,8 +296,10 @@ export const REPORT_JS = `/* Dependency-free SVG charts for report mode. Reads w
     var stride = Math.ceil(categories.length / 10);
     categories.forEach(function (name, k) {
       if (k % stride !== 0) { return; }
-      var shown = name.length > 14 ? name.slice(0, 13) + '...' : name;
-      out.push('<text class="tick-x" x="' + cx(k).toFixed(1) + '" y="' + (H - M.bottom + 20) + '">' + esc(shown) + '<title>' + esc(name) + '</title></text>');
+      var shortened = name.length > 14;
+      var shown = shortened ? name.slice(0, 13) + '...' : name;
+      // The tick text is its own label (no nested title, which doubled the text in the accessible name).
+      out.push('<text class="tick-x" data-category="' + esc(name) + '"' + (shortened ? ' aria-label="' + esc(name) + '"' : '') + ' x="' + cx(k).toFixed(1) + '" y="' + (H - M.bottom + 20) + '">' + esc(shown) + '</text>');
     });
     var axisY = Math.min(Math.max(y(0), M.top), M.top + plotH).toFixed(1);
     out.push('<line class="axis" x1="' + M.left + '" x2="' + (W - M.right) + '" y1="' + axisY + '" y2="' + axisY + '"/>');
@@ -312,7 +314,7 @@ export const REPORT_JS = `/* Dependency-free SVG charts for report mode. Reads w
           var from = v > 0 ? up : down, to = from + v;
           if (v > 0) { up = to; } else { down = to; }
           var top = y(Math.max(from, to)), height = Math.abs(y(from) - y(to));
-          out.push('<rect class="bar s' + s.slot + '" x="' + (cx(k) - barW / 2).toFixed(1) + '" y="' + top.toFixed(1) + '" width="' + barW.toFixed(1) + '" height="' + height.toFixed(1) + '">' + tip(s.name, name, v, spec.format) + '</rect>');
+          out.push('<rect class="bar s' + s.slot + '" data-series="' + esc(s.name) + '" data-category="' + esc(name) + '" x="' + (cx(k) - barW / 2).toFixed(1) + '" y="' + top.toFixed(1) + '" width="' + barW.toFixed(1) + '" height="' + height.toFixed(1) + '">' + tip(s.name, name, v, spec.format) + '</rect>');
         });
       });
     } else if (spec.type === 'grouped-bar') {
@@ -321,15 +323,15 @@ export const REPORT_JS = `/* Dependency-free SVG charts for report mode. Reads w
         series.forEach(function (s, i) {
           var v = s.values[k];
           var top = y(Math.max(v, 0)), height = Math.abs(y(v) - y(0));
-          out.push('<rect class="bar s' + s.slot + '" x="' + (cx(k) - groupW / 2 + each * i + 1).toFixed(1) + '" y="' + top.toFixed(1) + '" width="' + Math.max(each - 2, 1).toFixed(1) + '" height="' + height.toFixed(1) + '">' + tip(s.name, name, v, spec.format) + '</rect>');
+          out.push('<rect class="bar s' + s.slot + '" data-series="' + esc(s.name) + '" data-category="' + esc(name) + '" x="' + (cx(k) - groupW / 2 + each * i + 1).toFixed(1) + '" y="' + top.toFixed(1) + '" width="' + Math.max(each - 2, 1).toFixed(1) + '" height="' + height.toFixed(1) + '">' + tip(s.name, name, v, spec.format) + '</rect>');
         });
       });
     } else {
       series.forEach(function (s) {
         var points = s.values.map(function (v, k) { return cx(k).toFixed(1) + ',' + y(v).toFixed(1); });
-        out.push('<polyline class="line s' + s.slot + '" points="' + points.join(' ') + '"/>');
+        out.push('<polyline class="line s' + s.slot + '" data-series="' + esc(s.name) + '" points="' + points.join(' ') + '"><title>' + esc(s.name) + '</title></polyline>');
         s.values.forEach(function (v, k) {
-          out.push('<circle class="pt s' + s.slot + '" cx="' + cx(k).toFixed(1) + '" cy="' + y(v).toFixed(1) + '" r="4">' + tip(s.name, categories[k], v, spec.format) + '</circle>');
+          out.push('<circle class="pt s' + s.slot + '" data-series="' + esc(s.name) + '" data-category="' + esc(categories[k]) + '" cx="' + cx(k).toFixed(1) + '" cy="' + y(v).toFixed(1) + '" r="4">' + tip(s.name, categories[k], v, spec.format) + '</circle>');
         });
       });
     }
@@ -354,7 +356,7 @@ export const REPORT_JS = `/* Dependency-free SVG charts for report mode. Reads w
       return '<p class="chart-error">Chart "' + esc(id) + '" is missing or invalid in data.js (type must be stacked-bar, grouped-bar or line, with categories and series).</p>';
     }
     var series = seriesOf(spec);
-    var legend = '<ul class="legend">' + series.map(function (s) { return '<li class="s' + s.slot + '"><span class="swatch" aria-hidden="true"></span>' + esc(s.name) + '</li>'; }).join('') + '</ul>';
+    var legend = '<ul class="legend">' + series.map(function (s) { return '<li class="s' + s.slot + '" data-series="' + esc(s.name) + '"><span class="swatch" data-series="' + esc(s.name) + '" aria-hidden="true"></span>' + esc(s.name) + '</li>'; }).join('') + '</ul>';
     var caption = '<figcaption><strong>' + esc(spec.title || '') + '</strong>' + (spec.caption ? '<span>' + esc(spec.caption) + '</span>' : '') + '</figcaption>';
     var scroller = '<div class="chart-scroll" tabindex="0" role="region" aria-label="' + esc('Chart: ' + (spec.title || id)) + '">' + renderChartSvg(spec, id) + '</div>';
     return caption + legend + scroller + renderTable(spec, series);
@@ -380,6 +382,7 @@ export const REPORT_JS = `/* Dependency-free SVG charts for report mode. Reads w
     if (data.title) { document.title = String(data.title); }
     Array.prototype.forEach.call(document.querySelectorAll('figure[data-chart]'), function (el) {
       var key = el.getAttribute('data-chart');
+      if (!el.id) { el.id = 'chart-' + key; }
       el.innerHTML = renderFigure((data.charts || {})[key], 'chart-' + key);
     });
     var toc = document.getElementById('toc');
