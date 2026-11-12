@@ -31,7 +31,7 @@ function memory(initial: unknown, hooks: { load?: (n: number) => Promise<void> |
     loadData: async () => { loads += 1; await hooks.load?.(loads); return data === undefined ? undefined : structuredClone(data); },
     saveData: async (next: unknown) => { attempts += 1; await hooks.save?.(attempts, next); data = structuredClone(next); saves.push(structuredClone(next) as Record<string, unknown>); },
   };
-  return { storage, saves, get data() { return data as Record<string, any>; }, set data(v: unknown) { data = v; }, get loads() { return loads; }, get attempts() { return attempts; } };
+  return { storage, saves, get data() { return data as Record<string, any>; }, set data(v: any) { data = v; }, get loads() { return loads; }, get attempts() { return attempts; } };
 }
 
 // ---------------------------------------------------------------------------------------------
