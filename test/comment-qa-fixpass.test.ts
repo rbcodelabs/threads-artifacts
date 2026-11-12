@@ -183,7 +183,7 @@ describe('store: recovery merge, stale transitions, tombstones, timestamps', () 
     await fs.mkdir(dir(), { recursive: true });
     await fs.writeFile(path.join(dir(), name), typeof content === 'string' ? content : JSON.stringify(content));
   }
-  const clone = <T,>(v: T): T => JSON.parse(JSON.stringify(v));
+  const clone = (v: unknown): any => JSON.parse(JSON.stringify(v));
 
   describe('A2 recovery merge with hostile salvaged comments', () => {
     it('prev holds 200 comments and the damaged file has 5 more valid ones: all 200 previous comments survive, nothing throws', async () => {
