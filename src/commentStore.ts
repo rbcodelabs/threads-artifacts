@@ -83,6 +83,8 @@ export interface CommentStoreOptions {
   readonly schema?: { readonly current: number; readonly migrations: Readonly<Record<number, Migration>> };
   readonly limits?: { readonly maxWriteBytes?: number; readonly maxReadBytes?: number };
   readonly randomHex?: (bytes: number) => string;
+  /** How long to wait for the signing key before the store reports itself unavailable. Default 5000. */
+  readonly keyTimeoutMs?: number;
 }
 
 export interface OpenTarget {
@@ -250,6 +252,7 @@ export function createCommentStore(options: CommentStoreOptions): CommentStore {
   const maxRead = options.limits?.maxReadBytes ?? MAX_READ_BYTES;
   const hex = options.randomHex ?? ((n: number) => randomBytes(n).toString('hex'));
   const writtenBy = options.pluginVersion ?? 'threads-design';
+  const keyTimeoutMs = options.keyTimeoutMs ?? 5000;
 
   const newStoreId = () => `str_${hex(16)}`;
   const nowIso = () => now().toISOString();
@@ -264,6 +267,7 @@ export function createCommentStore(options: CommentStoreOptions): CommentStore {
     private timer: unknown = null;
     private pending: { reason: ArtifactCommentsChangeReason; ids: Set<string> | 'all' } | null = null;
     private flushScheduled = false;
+    private polling = false;
 
     constructor(readonly root: string, private readonly artifactId: string) {}
 
@@ -309,7 +313,15 @@ export function createCommentStore(options: CommentStoreOptions): CommentStore {
     }
 
     private async ensureKey(): Promise<Uint8Array> {
-      if (this.key === null) this.key = Uint8Array.from(await options.keys.getKey());
+      if (this.key === null) {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('The signing key did not load in time.')), keyTimeoutMs); });
+          this.key = Uint8Array.from(await Promise.race([options.keys.getKey(), timeout]));
+        } finally {
+          if (timer !== undefined) clearTimeout(timer);
+        }
+      }
       return this.key;
     }
 
@@ -902,8 +914,15 @@ export function createCommentStore(options: CommentStoreOptions): CommentStore {
       if (this.timer !== null) { timers.clearInterval(this.timer); this.timer = null; }
     }
 
+    /** A tick that arrives while the previous one is still running is dropped: a slow disk must not build a queue of polls. */
     async poll(): Promise<void> {
-      await withMutex(this.mutexKey, () => this.freshen()).catch(() => undefined);
+      if (this.polling) return;
+      this.polling = true;
+      try {
+        await withMutex(this.mutexKey, () => this.freshen()).catch(() => undefined);
+      } finally {
+        this.polling = false;
+      }
     }
 
     dispose(): void {
