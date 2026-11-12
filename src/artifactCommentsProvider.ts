@@ -77,12 +77,7 @@ function labelFor(selection: ArtifactFeedbackRequest['selection']): string {
 /** Cuts to at most `max` UTF-16 units without splitting a surrogate pair, adding an ellipsis when something was cut. */
 function clipCodePoints(text: string, max: number): string {
   if (text.length <= max) return text;
-  let out = '';
-  for (const point of text) {
-    if (out.length + point.length > max - 1) break;
-    out += point;
-  }
-  return `${out}…`;
+  return `${text.slice(0, max - 1)}…`;
 }
 
 export function createArtifactCommentsProvider(deps: CommentsProviderDeps): CommentsProviderController {
