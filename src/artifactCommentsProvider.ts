@@ -313,7 +313,7 @@ export function createArtifactCommentsProvider(deps: CommentsProviderDeps): Comm
     } catch {
       return;
     }
-    if (remove.json || remove.png) await removeSelectionFiles(root, selectionId, remove);
+    if (remove.json || remove.png) await removeSelectionFiles(root, selectionId, { json: true, png: true });
   }
 
   /** Retention around a fresh pin: every comment's selection is exempt; if they cannot be listed, nothing is pruned. */
