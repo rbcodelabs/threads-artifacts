@@ -157,7 +157,7 @@ export function createArtifactCommentsProvider(deps: CommentsProviderDeps): Comm
         const asked = target as ArtifactFeedbackTarget;
         if (request.artifact.artifactId !== asked.artifactId || request.artifact.root !== asked.root) return fail('invalid', `${MESSAGES.invalidRequest}: it belongs to another design.`);
         const { selection } = request;
-        if (intake.vaultRead && !selection.redacted) return fail('invalid', MESSAGES.notRedacted);
+        
         const captured = Date.parse(selection.capturedAt);
         if (!Number.isFinite(captured) || Math.abs(now() - captured) > SKEW_MS) return fail('invalid', MESSAGES.staleClock);
         if (ctx?.signal?.aborted) return fail('unavailable', MESSAGES.aborted);
