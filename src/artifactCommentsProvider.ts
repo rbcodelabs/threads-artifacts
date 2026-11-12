@@ -139,7 +139,7 @@ export function createArtifactCommentsProvider(deps: CommentsProviderDeps): Comm
     },
 
     get(target, id) {
-      if (typeof id !== 'string' || !ARTIFACT_COMMENT_ID_PATTERN.test(id)) return Promise.resolve(fail('invalid', 'That is not a comment id.'));
+      
       return run(target, async (handle, intake) => {
         const found = await handle.get(id);
         if (found.status !== 'ok') return found;
