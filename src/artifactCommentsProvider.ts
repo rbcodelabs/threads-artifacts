@@ -290,7 +290,7 @@ export function createArtifactCommentsProvider(deps: CommentsProviderDeps): Comm
       try {
         return await (await handleFor(root, artifactId)).protectedSelectionIds();
       } catch {
-        return null;
+        return [];
       }
     },
     dispose() {
