@@ -71,8 +71,18 @@ const clean = (text: string): string => text.replace(CONTROL_CHARS, ' ').replace
 /** Short display string for the rail: the tag plus the accessible name or text. Nothing at all for redacted selections. */
 function labelFor(selection: ArtifactFeedbackRequest['selection']): string {
   const name = selection.redacted ? '' : clean(selection.a11y.name ?? selection.textAnchor.text ?? '');
-  const label = name ? `${selection.tag} "${name}"` : selection.tag;
-  return label.length > ARTIFACT_COMMENTS_CAPS.maxLabelUnits ? `${label.slice(0, ARTIFACT_COMMENTS_CAPS.maxLabelUnits - 1)}…` : label;
+  return clipCodePoints(name ? `${selection.tag} "${name}"` : selection.tag, ARTIFACT_COMMENTS_CAPS.maxLabelUnits);
+}
+
+/** Cuts to at most `max` UTF-16 units without splitting a surrogate pair, adding an ellipsis when something was cut. */
+function clipCodePoints(text: string, max: number): string {
+  if (text.length <= max) return text;
+  let out = '';
+  for (const point of text) {
+    if (out.length + point.length > max - 1) break;
+    out += point;
+  }
+  return `${out}…`;
 }
 
 export function createArtifactCommentsProvider(deps: CommentsProviderDeps): CommentsProviderController {
@@ -80,15 +90,19 @@ export function createArtifactCommentsProvider(deps: CommentsProviderDeps): Comm
   const retention = deps.retention ?? SELECTION_RETENTION;
   const warn = deps.warn ?? (() => undefined);
   const handles = new Map<string, Promise<CommentRootHandle>>();
-  const subscriptions = new Set<{ dispose(): void }>();
+  const subscriptions = new Set<{ dispose(): void; attach(): void }>();
+  const warnedUnhealthy = new Set<string>();
   let active = false;
   let disposed = false;
 
   function handleFor(root: string, artifactId: string): Promise<CommentRootHandle> {
     let handle = handles.get(root);
     if (!handle) {
-      handle = deps.store.open({ root, artifactId });
-      handles.set(root, handle);
+      const opening = deps.store.open({ root, artifactId });
+      handle = opening;
+      handles.set(root, opening);
+      // A failed open must not be remembered: the next call tries again.
+      opening.catch(() => { if (handles.get(root) === opening) handles.delete(root); });
     }
     return handle;
   }
@@ -180,7 +194,8 @@ export function createArtifactCommentsProvider(deps: CommentsProviderDeps): Comm
 
         const result = await handle.create({
           selectionId: selection.selectionId,
-          createdAt: selection.capturedAt,
+          // Host clock: capturedAt comes from the page-side embedder and is used only for the staleness check above.
+          createdAt: new Date(now()).toISOString(),
           artifactRevision: selection.artifactRevision,
           viewSessionId: selection.viewSessionId,
           kind: 'pin',
@@ -200,7 +215,7 @@ export function createArtifactCommentsProvider(deps: CommentsProviderDeps): Comm
         });
         if (result.status !== 'ok') {
           // Nothing references the files we just wrote: do not leave them behind.
-          if (!files.replay) await removeSelectionFiles(intake.root, selection.selectionId);
+          await cleanUpOwnFiles(handle, intake.root, selection.selectionId, files);
           return result;
         }
         await pruneAround(handle, intake.root, selection.selectionId);
@@ -226,6 +241,7 @@ export function createArtifactCommentsProvider(deps: CommentsProviderDeps): Comm
 
     subscribe(target, listener) {
       let cancelled = false;
+      let started = false;
       let inner: { dispose(): void } | null = null;
       const subscription = {
         dispose() {
@@ -234,33 +250,42 @@ export function createArtifactCommentsProvider(deps: CommentsProviderDeps): Comm
           inner = null;
           subscriptions.delete(subscription);
         },
-      };
-      if (!active || typeof listener !== 'function') return subscription;
-      subscriptions.add(subscription);
-      void (async () => {
-        try {
-          const intake = await intakeOf(target);
-          if ('status' in intake || cancelled || !active) return;
-          const handle = await handleFor(intake.root, intake.manifest.id);
-          if (cancelled || !active) return;
-          const attached = handle.subscribe((change: ArtifactCommentsChange) => {
-            if (cancelled) return;
+        /** Attaches to the store once the provider is active. A subscription made earlier waits for activation. */
+        attach() {
+          if (started || cancelled || !active) return;
+          started = true;
+          void (async () => {
             try {
-              listener(structuredClone(change));
+              const intake = await intakeOf(target);
+              if ('status' in intake || cancelled || !active) return;
+              const handle = await handleFor(intake.root, intake.manifest.id);
+              if (cancelled || !active) return;
+              const deliver = (change: ArtifactCommentsChange) => {
+                if (cancelled) return;
+                try {
+                  listener(structuredClone(change));
+                } catch (error) {
+                  warn('threads-design: a comments listener threw', error);
+                }
+              };
+              const attached = handle.subscribe(deliver);
+              if (attached === null) {
+                // Too many listeners: tell this one to re-list, since it will not hear future changes.
+                warn(MESSAGES.tooManySubscribers);
+                deliver({ storeId: `str_${'0'.repeat(32)}`, revision: 0, reason: 'recovered', ids: 'all' });
+                return;
+              }
+              if (cancelled) attached.dispose();
+              else inner = attached;
             } catch (error) {
-              warn('threads-design: a comments listener threw', error);
+              warn('threads-design: could not subscribe to comments', error);
             }
-          });
-          if (attached === null) {
-            warn(MESSAGES.tooManySubscribers);
-            return;
-          }
-          if (cancelled) attached.dispose();
-          else inner = attached;
-        } catch (error) {
-          warn('threads-design: could not subscribe to comments', error);
-        }
-      })();
+          })();
+        },
+      };
+      if (disposed || typeof listener !== 'function') return { dispose() { /* nothing attached */ } };
+      subscriptions.add(subscription);
+      subscription.attach();
       return subscription;
     },
 
@@ -270,20 +295,42 @@ export function createArtifactCommentsProvider(deps: CommentsProviderDeps): Comm
     },
   };
 
+  /**
+   * After a rejected save: remove only the files THIS call created, and none at all when a comment for the id exists
+   * or the id is listed as pinned (another request may have won the race, or a v1 Send record owns them).
+   */
+  async function cleanUpOwnFiles(handle: CommentRootHandle, root: string, selectionId: string, files: { createdJson: boolean; createdPng: boolean }): Promise<void> {
+    if (!files.createdJson && !files.createdPng) return;
+    try {
+      const existing = await handle.get(`cmt_${selectionId.slice(4)}`);
+      if (existing.status === 'ok') return;
+      if ((await handle.protectedSelectionIds().catch(() => null))?.includes(selectionId)) return;
+    } catch {
+      return;
+    }
+    await removeSelectionFiles(root, selectionId, { json: files.createdJson, png: files.createdPng });
+  }
+
   /** Retention around a fresh pin: every comment's selection is exempt; if they cannot be listed, nothing is pruned. */
   async function pruneAround(handle: CommentRootHandle, root: string, selectionId: string): Promise<void> {
     try {
       const protectIds = await handle.protectedSelectionIds();
       await pruneSelections({ root, keep: retention, protectId: selectionId, protectIds });
     } catch {
-      // A store that is not healthy cannot say which selections are pinned: keep everything.
+      // A store that is not healthy cannot say which selections are pinned: keep everything, and say so once.
+      if (!warnedUnhealthy.has(root)) {
+        warnedUnhealthy.add(root);
+        warn('threads-design: selection retention is skipped because the comment store is not healthy');
+      }
     }
   }
 
   return {
     provider,
     activate() {
-      if (!disposed) active = true;
+      if (disposed) return;
+      active = true;
+      for (const subscription of [...subscriptions]) subscription.attach();
     },
     async protectedSelectionIds(root, artifactId) {
       if (!active) return null;
