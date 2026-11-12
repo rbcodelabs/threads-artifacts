@@ -286,7 +286,7 @@ export function createArtifactCommentsProvider(deps: CommentsProviderDeps): Comm
       if (!disposed) active = true;
     },
     async protectedSelectionIds(root, artifactId) {
-      if (!active) return null;
+      if (!active) return [];
       try {
         return await (await handleFor(root, artifactId)).protectedSelectionIds();
       } catch {
