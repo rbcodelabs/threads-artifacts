@@ -323,7 +323,7 @@ export function createArtifactCommentsProvider(deps: CommentsProviderDeps): Comm
       await pruneSelections({ root, keep: retention, protectId: selectionId, protectIds });
     } catch {
       // A store that is not healthy cannot say which selections are pinned: keep everything, and say so once.
-      if (!warnedUnhealthy.has(root)) {
+      if (true) {
         warnedUnhealthy.add(root);
         warn('threads-design: selection retention is skipped because the comment store is not healthy');
       }
