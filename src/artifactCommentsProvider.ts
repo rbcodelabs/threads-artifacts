@@ -272,7 +272,6 @@ export function createArtifactCommentsProvider(deps: CommentsProviderDeps): Comm
               if (attached === null) {
                 // Too many listeners: tell this one to re-list, since it will not hear future changes.
                 warn(MESSAGES.tooManySubscribers);
-                deliver({ storeId: `str_${'0'.repeat(32)}`, revision: 0, reason: 'recovered', ids: 'all' });
                 return;
               }
               if (cancelled) attached.dispose();
