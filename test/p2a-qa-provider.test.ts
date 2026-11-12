@@ -275,9 +275,9 @@ describe('save: cleanup and replay (T6)', () => {
 
   // DEFECT (src/artifactCommentsProvider.ts save, cleanup branch): `files.replay` is false for whichever request wrote the
   // files first, not for whichever request lost the store race. When that request then loses with `conflict` it deletes
-  // the selection files that the WINNING comment references. `it.fails` passes while the defect exists and goes red when
+  // the selection files that the WINNING comment references. (was `it.fails` until fixed; now a normal test) it passed while the defect existed and went red when
   // it is fixed; then change it to `it`.
-  it.fails('two concurrent saves of one selection id with different content leave the surviving comment with its selection files', async () => {
+  it('two concurrent saves of one selection id with different content leave the surviving comment with its selection files', async () => {
     // Force the interleaving: the SECOND request to touch the files (replay=false is the first writer) has its
     // store.create delayed until the first-created comment is already stored. Whoever loses must not delete files
     // that the winning comment references.

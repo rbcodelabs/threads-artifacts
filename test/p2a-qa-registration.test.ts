@@ -181,7 +181,7 @@ describe('negotiation matrix, observed (design 1.1, T12)', () => {
   // dispose that throws escapes registerElementFeedback, leaks the coordinator and the candidate provider, and in the
   // unsupported-version race loses the v1 fallback. The host documents refusal dispose as an idempotent no-op, so this
   // needs a misbehaving host. `it.fails` passes while it exists.
-  it.fails('never throws out of registerElementFeedback when a refusal\'s dispose throws, and leaks nothing (coordinator and provider are torn down)', () => {
+  it('never throws out of registerElementFeedback when a refusal\'s dispose throws, and leaks nothing (coordinator and provider are torn down)', () => {
     const refusing = geode([1, 2], ['conflict'], { disposeThrows: true });
     expect(() => registerElementFeedback(opts(refusing, { installKeys: keys().provider }))).not.toThrow();
     const racing = geode([1, 2], ['unsupported-version', 'registered'], { disposeThrows: true });

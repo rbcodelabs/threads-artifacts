@@ -301,14 +301,19 @@ export function createArtifactCommentsProvider(deps: CommentsProviderDeps): Comm
    */
   async function cleanUpOwnFiles(handle: CommentRootHandle, root: string, selectionId: string, files: { createdJson: boolean; createdPng: boolean }): Promise<void> {
     if (!files.createdJson && !files.createdPng) return;
+    let remove = { json: files.createdJson, png: files.createdPng };
     try {
       const existing = await handle.get(`cmt_${selectionId.slice(4)}`);
-      if (existing.status === 'ok') return;
-      if ((await handle.protectedSelectionIds().catch(() => null))?.includes(selectionId)) return;
+      if (existing.status === 'ok') {
+        // The comment owns its json always, and its png only if it was saved with one: a png this losing call added is an orphan.
+        remove = { json: false, png: files.createdPng && !existing.value.hasScreenshot };
+      } else if ((await handle.protectedSelectionIds().catch(() => null))?.includes(selectionId)) {
+        return;
+      }
     } catch {
       return;
     }
-    await removeSelectionFiles(root, selectionId, { json: files.createdJson, png: files.createdPng });
+    if (remove.json || remove.png) await removeSelectionFiles(root, selectionId, remove);
   }
 
   /** Retention around a fresh pin: every comment's selection is exempt; if they cannot be listed, nothing is pruned. */
