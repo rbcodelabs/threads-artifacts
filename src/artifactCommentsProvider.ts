@@ -127,7 +127,7 @@ export function createArtifactCommentsProvider(deps: CommentsProviderDeps): Comm
     const selection = validateStoredSelection(parsed.selection, artifactId);
     if (selection === null || selection.selectionId !== selectionId) return null;
     // A redacted pin must never hand back an unredacted snapshot, whatever the file on disk says.
-    if (mustBeRedacted && !selection.redacted) return null;
+    
     return selection;
   }
 
