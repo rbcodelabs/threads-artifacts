@@ -313,7 +313,7 @@ export async function protectedIdsWithoutStore(root: string): Promise<readonly s
   for (const name of ['comments.json', 'comments.prev.json']) {
     try {
       await fs.lstat(path.join(root, SIDECAR_DIR, name));
-      return null;
+      return [];
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return null;
     }
