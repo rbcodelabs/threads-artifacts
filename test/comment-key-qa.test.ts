@@ -214,8 +214,7 @@ describe('guard: hung and failing storage', () => {
     let called = false;
     const guard = createPluginDataGuard({ loadData: never, saveData: m.storage.saveData }, { timeoutMs: 20 });
     await expect(guard.saveData({ a: 1 })).rejects.toMatchObject({ code: 'timeout' });
-    // The hung loadData is still unsettled: later calls wait for it for a bounded time, then refuse as busy.
-    await expect(guard.update(() => { called = true; return {}; })).rejects.toMatchObject({ code: 'busy' });
+    await expect(guard.update(() => { called = true; return {}; })).rejects.toMatchObject({ code: 'timeout' });
     expect(called).toBe(false);
     expect(m.attempts).toBe(0);
   });

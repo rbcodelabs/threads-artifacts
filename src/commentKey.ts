@@ -22,7 +22,7 @@ export const COMMENTS_KEY_FIELD = 'commentsInstallKey';
 const DEFAULT_TIMEOUT_MS = 5000;
 const HEX_KEY = /^[0-9a-f]{64}$/;
 
-export type InstallKeyErrorCode = 'malformed' | 'unreadable' | 'unwritable' | 'timeout';
+export type InstallKeyErrorCode = 'malformed' | 'unreadable' | 'unwritable' | 'timeout' | 'busy' | 'invalid';
 
 export class InstallKeyError extends Error {
   constructor(readonly code: InstallKeyErrorCode, message: string) {
@@ -54,12 +54,24 @@ export interface GuardOptions {
   readonly generate?: () => Uint8Array;
   /** Per storage call. Default 5000. */
   readonly timeoutMs?: number;
+  /**
+   * How long a call waits for an earlier SAVE that timed out but has not settled yet. Until that save
+   * settles (or this wait runs out, which refuses the call as `busy`) nothing else runs: a late write
+   * must never land on top of a newer key or settings object. Default 6 x timeoutMs.
+   */
+  readonly maxQueueWaitMs?: number;
 }
 
 const asRecord = (value: unknown): Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value) ? { ...(value as Record<string, unknown>) } : {};
 
 const keyFieldOf = (key: Uint8Array) => ({ v: 1, key: Buffer.from(key).toString('hex') });
+
+/** Saving anything but a plain object would reduce the settings to {}: refuse instead. */
+function plain(value: unknown, message: string): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new InstallKeyError('invalid', message);
+  return { ...(value as Record<string, unknown>) };
+}
 
 type Parsed = { state: 'absent' } | { state: 'valid'; key: Uint8Array } | { state: 'malformed' };
 function parseKeyField(data: Record<string, unknown>): Parsed {
@@ -75,27 +87,46 @@ function parseKeyField(data: Record<string, unknown>): Parsed {
 export function createPluginDataGuard(storage: PluginDataStorage, options: GuardOptions = {}): PluginDataGuard {
   const generate = options.generate ?? (() => randomBytes(32));
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const maxQueueWaitMs = options.maxQueueWaitMs ?? timeoutMs * 6;
   let cached: Uint8Array | null = null;
   let tail: Promise<void> = Promise.resolve();
+  /** The latest save that timed out and has not settled yet. */
+  let stalledWrite: Promise<void> | null = null;
+
+  const waitForStalledWrite = async (): Promise<void> => {
+    const stalled = stalledWrite;
+    if (stalled === null) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const gaveUp = new Promise<'busy'>((resolve) => { timer = setTimeout(() => resolve('busy'), maxQueueWaitMs); });
+    const outcome = await Promise.race([stalled.then(() => 'settled' as const), gaveUp]);
+    if (timer !== undefined) clearTimeout(timer);
+    if (outcome === 'busy' && stalledWrite === stalled) throw new InstallKeyError('busy', 'An earlier save of plugin data is still in progress.');
+  };
 
   /** Runs one job at a time. A failed or timed-out job never blocks the ones after it. */
   const serial = <T,>(job: () => Promise<T>): Promise<T> => {
-    const result = tail.then(job);
+    const result = tail.then(async () => { await waitForStalledWrite(); return job(); });
     tail = result.then(() => undefined, () => undefined);
     return result;
   };
 
   const bounded = <T,>(call: () => Promise<T>, code: 'unreadable' | 'unwritable', what: string): Promise<T> =>
     new Promise<T>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new InstallKeyError('timeout', `Reading or saving plugin data timed out (${what}).`)), timeoutMs);
       let started: Promise<T>;
       try {
         started = call();
-      } catch (error) {
-        clearTimeout(timer);
+      } catch {
         reject(new InstallKeyError(code, `Plugin data could not be ${what}.`));
         return;
       }
+      const timer = setTimeout(() => {
+        if (code === 'unwritable') {
+          // A save we gave up on may still land later: hold the queue until it settles.
+          const settled = started.then(() => undefined, () => undefined).then(() => { if (stalledWrite === settled) stalledWrite = null; });
+          stalledWrite = settled;
+        }
+        reject(new InstallKeyError('timeout', `Reading or saving plugin data timed out (${what}).`));
+      }, timeoutMs);
       started.then(
         (value) => { clearTimeout(timer); resolve(value); },
         () => { clearTimeout(timer); reject(new InstallKeyError(code, `Plugin data could not be ${what}.`)); },
@@ -128,6 +159,7 @@ export function createPluginDataGuard(storage: PluginDataStorage, options: Guard
         if (parsed.state === 'malformed') throw new InstallKeyError('malformed', 'The stored signing key is damaged, so Design will not sign or verify comments.');
         if (parsed.state === 'valid') { cached = parsed.key; return Uint8Array.from(cached); }
         const created = Uint8Array.from(generate());
+        if (created.length !== 32) throw new InstallKeyError('invalid', 'The generated signing key has the wrong length.');
         // Saved before it is used: a key that was not persisted would orphan whatever it signed.
         await bounded(() => storage.saveData({ ...stored, [COMMENTS_KEY_FIELD]: keyFieldOf(created) }), 'unwritable', 'saved');
         cached = created;
@@ -138,12 +170,12 @@ export function createPluginDataGuard(storage: PluginDataStorage, options: Guard
       return serial(async () => withoutKey(await read()));
     },
     saveData(next: unknown) {
-      return serial(async () => write(await read(), asRecord(next)));
+      return serial(async () => write(await read(), plain(next, 'Plugin data must be an object.')));
     },
     update(fn) {
       return serial(async () => {
         const stored = await read();
-        await write(stored, asRecord(fn(withoutKey(stored))));
+        await write(stored, plain(fn(withoutKey(stored)), 'The update must return an object.'));
       });
     },
   };

@@ -100,7 +100,18 @@ const isObject = (value: unknown): value is Json => typeof value === 'object' &&
 /** Reads an own property only, so a hostile prototype can never inject a field. */
 const own = (obj: Json, key: string): unknown => (Object.prototype.hasOwnProperty.call(obj, key) ? obj[key] : undefined);
 const isString = (value: unknown, max: number, min = 0): value is string => typeof value === 'string' && value.length >= min && value.length <= max;
-const isIso = (value: unknown): value is string => typeof value === 'string' && ISO.test(value) && Number.isFinite(Date.parse(value));
+/**
+ * Canonical ISO form (`toISOString`) of a timestamp, or null. Impossible dates such as 2026-02-31 are rejected:
+ * V8 would roll them over, so the date and time fields must survive the round trip unchanged.
+ */
+function normIso(value: unknown): string | null {
+  if (typeof value !== 'string' || !ISO.test(value)) return null;
+  const time = Date.parse(value);
+  if (!Number.isFinite(time)) return null;
+  const iso = new Date(time).toISOString();
+  return iso.slice(0, 19) === value.slice(0, 19) ? iso : null;
+}
+const isIso = (value: unknown): value is string => normIso(value) !== null;
 /** Counters stay far below 2^53 so `+ 1` always changes them; a hostile file cannot park one at the edge. */
 const MAX_COUNTER = 1_000_000_000;
 const isInt = (value: unknown, min: number, max = Number.MAX_SAFE_INTEGER): value is number => typeof value === 'number' && Number.isInteger(value) && value >= min && value <= max;
@@ -284,8 +295,8 @@ export function validatePinDraft(raw: unknown): DraftValidation {
   if (typeof selectionId !== 'string' || !SELECTION_ID.test(selectionId)) return { ok: false, reason: 'Invalid selection id.' };
   const text = own(raw, 'text');
   if (!isString(text, ARTIFACT_COMMENTS_CAPS.maxTextUnits, 1)) return { ok: false, reason: 'The comment must be 1 to 4000 characters.' };
-  const createdAt = own(raw, 'createdAt');
-  if (!isIso(createdAt)) return { ok: false, reason: 'Invalid timestamp.' };
+  const createdAt = normIso(own(raw, 'createdAt'));
+  if (createdAt === null) return { ok: false, reason: 'Invalid timestamp.' };
   const artifactRevision = own(raw, 'artifactRevision');
   if (!isInt(artifactRevision, 0)) return { ok: false, reason: 'Invalid artifact revision.' };
   const viewSessionId = own(raw, 'viewSessionId');
@@ -349,9 +360,9 @@ export function validateStoredComment(raw: unknown): CommentValidation {
   if (typeof id !== 'string' || id !== deriveCommentId(selectionId)) return { ok: false, reason: 'id does not derive from the selection id' };
   const text = own(raw, 'text');
   if (!isString(text, ARTIFACT_COMMENTS_CAPS.maxTextUnits, 1)) return { ok: false, reason: 'bad text' };
-  const createdAt = own(raw, 'createdAt');
-  const updatedAt = own(raw, 'updatedAt');
-  if (!isIso(createdAt) || !isIso(updatedAt)) return { ok: false, reason: 'bad timestamp' };
+  const createdAt = normIso(own(raw, 'createdAt'));
+  const updatedAt = normIso(own(raw, 'updatedAt'));
+  if (createdAt === null || updatedAt === null) return { ok: false, reason: 'bad timestamp' };
   const anchor = readAnchor(own(raw, 'anchor'));
   if (anchor === null) return { ok: false, reason: 'bad anchor' };
   const label = own(raw, 'label');
@@ -374,7 +385,7 @@ export function validateStoredComment(raw: unknown): CommentValidation {
   const ordinalRaw = own(raw, 'ordinal');
   const ordinal = isInt(ordinalRaw, 1, MAX_COUNTER) ? ordinalRaw : (clamped.push('ordinal'), 0);
   const sentAtRaw = own(raw, 'sentAt');
-  const sentAt = sentAtRaw === null ? null : isIso(sentAtRaw) ? sentAtRaw : (clamped.push('sentAt'), null);
+  const sentAt = sentAtRaw === null ? null : normIso(sentAtRaw) ?? (clamped.push('sentAt'), null);
   const sigRaw = own(raw, 'sig');
   const sig = typeof sigRaw === 'string' && sigRaw.length <= 256 ? sigRaw : (clamped.push('sig'), '');
 
@@ -461,8 +472,8 @@ function sanitizeTombstones(raw: unknown, nowMs: number): { tombstones: Tombston
   for (const entry of list) {
     if (!isObject(entry)) { dropped += 1; continue; }
     const id = own(entry, 'id');
-    const at = own(entry, 'at');
-    if (!isCommentId(id) || !isIso(at)) { dropped += 1; continue; }
+    const at = normIso(own(entry, 'at'));
+    if (!isCommentId(id) || at === null) { dropped += 1; continue; }
     if (nowMs - Date.parse(at) > TOMBSTONE_TTL_MS) { dropped += 1; continue; }
     const current = newest.get(id);
     if (current === undefined || at > current) newest.set(id, at);
@@ -530,7 +541,9 @@ export function normalizeCommentsFile(raw: unknown, nowMs: number): NormalizeRes
   const buried = new Map(tombstones.map((t) => [t.id, t.at]));
   let live = [...winners.values()].filter((c) => {
     const at = buried.get(c.id);
-    return at === undefined || c.updatedAt > at;
+    if (at === undefined || c.updatedAt > at) return true;
+    dropped += 1; // a tombstone removed a comment that was still in the file: that is a change, so the original is kept
+    return false;
   });
 
   live.sort(byOrdinal);
@@ -546,7 +559,7 @@ export function normalizeCommentsFile(raw: unknown, nowMs: number): NormalizeRes
     storeId,
     rev: isInt(revRaw, 0) ? revRaw : 0,
     writtenBy: isString(writtenBy, 64) ? writtenBy : '',
-    writtenAt: isIso(writtenAt) ? writtenAt : '',
+    writtenAt: normIso(writtenAt) ?? '',
     bodySha256: bodySha256(body),
     ...body,
   };
