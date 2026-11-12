@@ -183,3 +183,54 @@ describe('pruneSelections (A10)', () => {
     expect(await fs.readdir(outside)).toEqual([`${idFor(1)}.json`]);
   });
 });
+
+describe('pruneSelections protectIds (P1: comment-referenced selections are exempt from retention)', () => {
+  const idFor = (n: number) => `sel_${n.toString(16).padStart(32, '0')}`;
+
+  async function seed(count: number): Promise<void> {
+    await fs.mkdir(selectionsDir(), { recursive: true });
+    const now = Date.now();
+    for (let n = 0; n < count; n++) {
+      const when = new Date(now - (count - n) * 1000);
+      for (const ext of ['json', 'png']) {
+        const file = path.join(selectionsDir(), `${idFor(n)}.${ext}`);
+        await fs.writeFile(file, 'x');
+        await fs.utimes(file, when, when);
+      }
+    }
+  }
+
+  it('keeps every protected id even when old, and applies newest-N only to the unreferenced ones', async () => {
+    await seed(60);
+    const protectIds = [0, 1, 2, 3, 4].map(idFor);
+    await pruneSelections({ root, keep: 50, protectIds });
+    const left = new Set(await fs.readdir(selectionsDir()));
+    for (const id of protectIds) {
+      expect(left.has(`${id}.json`)).toBe(true);
+      expect(left.has(`${id}.png`)).toBe(true);
+    }
+    // 55 unreferenced ids (5..59): the newest 50 (10..59) survive, 5..9 go.
+    expect(left.has(`${idFor(9)}.json`)).toBe(false);
+    expect(left.has(`${idFor(10)}.json`)).toBe(true);
+    expect(left.size).toBe(110);
+  });
+
+  it('accepts a Set, ignores malformed entries, and still removes unprotected old files', async () => {
+    await seed(5);
+    await pruneSelections({ root, keep: 0, protectIds: new Set([idFor(1), '../../x', 'sel_short', '']) });
+    const left = await fs.readdir(selectionsDir());
+    expect(left.sort()).toEqual([`${idFor(1)}.json`, `${idFor(1)}.png`]);
+  });
+
+  it('protectId and protectIds combine', async () => {
+    await seed(5);
+    await pruneSelections({ root, keep: 0, protectId: idFor(0), protectIds: [idFor(4)] });
+    expect((await fs.readdir(selectionsDir())).sort()).toEqual([`${idFor(0)}.json`, `${idFor(0)}.png`, `${idFor(4)}.json`, `${idFor(4)}.png`]);
+  });
+
+  it('an empty protectIds changes nothing', async () => {
+    await seed(55);
+    await pruneSelections({ root, keep: 50, protectIds: [] });
+    expect(await fs.readdir(selectionsDir())).toHaveLength(100);
+  });
+});
