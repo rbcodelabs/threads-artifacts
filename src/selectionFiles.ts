@@ -238,7 +238,7 @@ export async function readSelectionJson(root: string, selectionId: string, ops: 
     if (dir === null) return null;
     const file = path.join(dir, `${selectionId}.json`);
     const before = await lstatOrNull(ops, file);
-    if (before === null || before.isSymbolicLink() || !before.isFile() || before.nlink > 1 || before.size > MAX_SELECTION_JSON_BYTES) return null;
+    if (before === null || before.size > MAX_SELECTION_JSON_BYTES) return null;
     const handle = await ops.open(file, SELECTION_READ_FLAGS);
     try {
       const stat = await handle.stat();
