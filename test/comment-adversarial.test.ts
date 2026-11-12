@@ -4,11 +4,13 @@ import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { mergeBodies } from '../src/commentModel';
+import type { CommentsBody, StoredComment } from '../src/commentModel';
 import { createCommentStore, defaultStoreFsOps } from '../src/commentStore';
 import type { CommentRootHandle, CommentStoreOptions } from '../src/commentStore';
 import type { ArtifactCommentsResult } from '../src/geodeArtifactFeedbackV2';
 import { pruneSelections, writeSelectionFiles } from '../src/selectionFiles';
-import { ARTIFACT_ID, cmtId, fileOf, KEY, NOW, OTHER_KEY, pinDraft, selId, stored } from './helpers/commentFixtures';
+import { ARTIFACT_ID, cmtId, fileOf, KEY, NOW, OTHER_KEY, pinDraft, prng, selId, stored } from './helpers/commentFixtures';
 
 /**
  * QA pass over the pinned-comments store (design sections 2.1 to 2.6, threats T4 to T8).
@@ -754,5 +756,45 @@ describe('pruneSelections with protectedSelectionIds (integration)', () => {
     await writeSel(9);
     await pruneSelections({ root, keep: 0, protectIds: await again.protectedSelectionIds() });
     expect(await present()).toEqual([1, 2, 3].map((n) => `${selId(n)}.json`));
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Merge property the model suite does not reach
+// ---------------------------------------------------------------------------------------------
+
+describe('mergeBodies: tombstones from the other body', () => {
+  // comment-model.test.ts walks the MERGED tombstone list when it checks for resurrection, so a merge
+  // that ignores tombstones entirely (empty list, empty loop) passes it. This property walks the INPUT
+  // tombstones instead.
+  it('no comment survives a tombstone (from either body) that is not older than it, over 400 seeded pairs', () => {
+    const rand = prng(20261112);
+    const nowMs = Date.parse(NOW);
+    const hoursAgo = (h: number) => new Date(nowMs - h * 3_600_000).toISOString();
+    const randomBody = (): CommentsBody => {
+      const comments: StoredComment[] = [];
+      const tombstones: { id: string; at: string }[] = [];
+      for (let n = 1; n <= 8; n += 1) {
+        if (rand() < 0.5) comments.push(stored(n, { ordinal: n, version: 1 + Math.floor(rand() * 3), updatedAt: hoursAgo(Math.floor(rand() * 4)) }));
+        if (rand() < 0.4) tombstones.push({ id: cmtId(n), at: hoursAgo(Math.floor(rand() * 4)) });
+      }
+      return { comments, tombstones, nextOrdinal: 9 };
+    };
+    const newestTombstone = (a: CommentsBody, b: CommentsBody, id: string) => [...a.tombstones, ...b.tombstones].filter((t) => t.id === id).map((t) => t.at).sort().pop();
+    let exercised = 0;
+    for (let i = 0; i < 400; i += 1) {
+      const a = randomBody();
+      const b = randomBody();
+      const merged = mergeBodies(a, b, nowMs);
+      for (const input of [a, b]) for (const c of input.comments) {
+        const at = newestTombstone(a, b, c.id);
+        if (at !== undefined && c.updatedAt <= at) exercised += 1;
+      }
+      for (const c of merged.comments) {
+        const at = newestTombstone(a, b, c.id);
+        if (at !== undefined) expect(c.updatedAt > at, `${c.id} (${c.updatedAt}) survived tombstone ${at}`).toBe(true);
+      }
+    }
+    expect(exercised, 'the generator must produce covered comments').toBeGreaterThan(100);
   });
 });
