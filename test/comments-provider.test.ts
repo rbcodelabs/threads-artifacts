@@ -101,7 +101,7 @@ describe('save (pins)', () => {
     expect(saved.created).toBe(true);
     expect(saved.comment).toMatchObject({
       id: CMT, selectionId: SELECTION_ID, ordinal: 1, version: 1, kind: 'pin', status: 'open', provenance: 'local',
-      text: 'Make this heading larger.', createdAt: '2026-11-08T20:00:00.000Z', artifactRevision: 7, viewSessionId: 'view-1',
+      text: 'Make this heading larger.', createdAt: '2026-11-08T20:01:00.000Z', artifactRevision: 7, viewSessionId: 'view-1',
       hasScreenshot: true, redacted: false, label: 'h1 "Build faster"',
       anchor: { route: '/index.html', tag: 'h1', selector: '#hero-title', selectorAlternates: ['main > h1', 'h1.title.big'], textAnchor: { tag: 'h1', text: 'Build faster' }, landmark: 'Hero', lastRect: { x: 10, y: 120, width: 300, height: 40 } },
     });
