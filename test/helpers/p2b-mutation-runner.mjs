@@ -22,7 +22,7 @@ const mutants = [
   { id: 'M10 prompt: forged-token retry loop gives up after one attempt', file: PROMPT, from: 'const MAX_TOKEN_ATTEMPTS = 8;', to: 'const MAX_TOKEN_ATTEMPTS = 1;' },
   { id: 'M11 provider: foreign comments sendable', file: PROVIDER, from: "else if (comment.provenance !== 'local') results.set(id, { id, result: 'skipped', reason: 'foreign' });", to: "else if (false) results.set(id, { id, result: 'skipped', reason: 'foreign' });" },
   { id: 'M12 provider: no requestId ledger', file: PROVIDER, from: 'let entry = ledger.get(key);', to: 'let entry: BatchEntry | undefined = undefined;' },
-  { id: 'M13 provider: no write-ahead', file: PROVIDER, from: "const written = await handle.transition(plan.includedIds.map((id) => ({ id, event: known.get(id)?.status === 'sent' ? ('batch-resend' as const) : ('batch-issued' as const), requestId, expectedVersion: known.get(id)?.version })));", to: "const written = { status: 'ok' } as any;" },
+  { id: 'M13 provider: no write-ahead', file: PROVIDER, from: "const written = await handle.transition(plan.includedIds.map((id) => ({ id, event: known.get(id)?.status === 'sent' ? ('batch-resend' as const) : ('batch-issued' as const), requestId, promptSha, expectedVersion: known.get(id)?.version })));", to: "const written = { status: 'ok' } as any;" },
   { id: 'M14 provider: mark sent whatever threads.send answered', file: PROVIDER, from: "if (outcome.status === 'sent') {\n      entry.state = 'done';", to: "if (true) {\n      entry.state = 'done';" },
   { id: 'M15 provider: ledger TTL 20 min', file: PROVIDER, from: 'const LEDGER_TTL_MS = 10 * 60 * 1000;', to: 'const LEDGER_TTL_MS = 20 * 60 * 1000;' },
   { id: 'M16 provider: ledger size 65', file: PROVIDER, from: 'const LEDGER_SIZE = 64;', to: 'const LEDGER_SIZE = 65;' },
@@ -49,7 +49,7 @@ const NEW = [
   { id: 'N02 coordinator: abandoned run still proceeds after threadState', file: COORD, from: "if (abandoned.value) return rejected('failed', MESSAGES.timedOut);\n      if (disposed)", to: 'if (disposed)' },
   { id: 'N03 coordinator: abandoned run holds after a THREAD_BUSY answer', file: COORD, from: "if (outcome === BUSY && abandoned.value) return rejected('failed', MESSAGES.timedOut);", to: '' },
   { id: 'N04 provider: no conflict for a maybe-sent retry', file: PROVIDER, from: "if ([...marks.values()].some((mark) => mark === requestId)) return fail('conflict', MESSAGES.maybeSentRetry);", to: '' },
-  { id: 'N05 provider: write-ahead without expectedVersion', file: PROVIDER, from: 'requestId, expectedVersion: known.get(id)?.version })));', to: 'requestId })));' },
+  { id: 'N05 provider: write-ahead without expectedVersion', file: PROVIDER, from: 'requestId, promptSha, expectedVersion: known.get(id)?.version })));', to: 'requestId, promptSha })));' },
   { id: 'N06 provider: plan key ignores the text', file: PROVIDER, from: '`${comment.id}:${textHash(comment.text)}`', to: '`${comment.id}`' },
   { id: 'N07 provider: no cancelled tombstone', file: PROVIDER, from: "if (entry.state === 'cancelled') return fail('conflict', MESSAGES.cancelled);", to: '' },
   { id: 'N08 provider: deferred results not matched by artifact', file: PROVIDER, from: ' && entry.root === result.artifactKey) {', to: ') {' },
@@ -75,9 +75,9 @@ mutants.push(...NEW);
 const FINAL = [
   { id: 'Q01 coordinator: a timeout is not flagged maybe-sent', file: COORD, from: "resolve(uncertain('failed', MESSAGES.timedOut))", to: "resolve(rejected('failed', MESSAGES.timedOut))" },
   { id: 'Q02 coordinator: reload mid-send not flagged maybe-sent', file: COORD, from: "issued.value ? uncertain('unavailable', MESSAGES.statusUnknown)", to: "issued.value ? rejected('unavailable', MESSAGES.statusUnknown)" },
-  { id: 'Q03 provider: maybeSent not passed to the store', file: PROVIDER, from: 'outcome.maybeSent === true);', to: 'false);' },
+  { id: 'Q03 provider: maybeSent not passed to the store', file: PROVIDER, from: 'outcome.maybeSent === true);', to: 'false);', all: true },
   { id: 'Q04 provider: prompt hash comparison removed', file: PROVIDER, from: 'mark.promptSha !== promptSha) return fail', to: 'false) return fail' },
-  { id: 'Q05 provider: conflict for any request id, not only the same one', file: PROVIDER, from: 'mark?.requestId === requestId && mark.promptSha', to: 'true && mark?.promptSha' },
+  { id: 'Q05 provider: conflict for any request id, not only the same one', file: PROVIDER, from: 'if (mark?.requestId !== requestId) continue;', to: 'if (false) continue;' },
   { id: 'Q06 provider: prompt hash not stored', file: PROVIDER, from: 'requestId, promptSha, expectedVersion', to: 'requestId, expectedVersion' },
   { id: 'Q07 store: batch secret unstable (random per call)', file: 'src/commentStore.ts', from: ".update('threads-design/batch-boundary/v1')", to: ".update(randomBytes(8).toString('hex'))" },
   { id: 'Q08 store: batch secret is the raw install key', file: 'src/commentStore.ts', from: "return createHmac('sha256', await this.ensureKey()).update('threads-design/batch-boundary/v1').digest('hex');", to: "return Buffer.from(await this.ensureKey()).toString('hex');" },
@@ -85,11 +85,25 @@ const FINAL = [
   { id: 'Q10 prompt: no URL defusing after an escape', file: PROMPT, from: String.raw`(?:\b|(?<=\\u[0-9a-f]{4})|(?<=\\u\{[0-9a-f]+\}))`, to: String.raw`\b` },
   { id: 'Q11 store: prompt hash not validated in transitions', file: 'src/commentStore.ts', from: "if (item.promptSha !== undefined && !isPromptSha(item.promptSha)) return rejected('invalid', 'Those changes are not valid.');", to: '' },
   { id: 'Q12 model: send-failed maybeSent not sticky', file: 'src/commentModel.ts', from: 'maybeSent: ctx.maybeSent === true ? true : send.maybeSent', to: 'maybeSent: ctx.maybeSent === true' },
-  { id: 'Q13 provider: uncertain-retry branch removed', file: PROVIDER, from: 'if (uncertain.length > 0) {', to: 'if (false) {' },
+  { id: 'Q13 provider: uncertain-retry branch removed', file: PROVIDER, from: 'if (maybeSent.length > 0) {', to: 'if (false) {' },
   { id: 'Q14 model: hostile stored prompt hash accepted', file: 'src/commentModel.ts', from: '...(isPromptSha(promptSha) ? { lastBatchPromptSha: promptSha } : {}),', to: '...(promptSha !== undefined ? { lastBatchPromptSha: promptSha as string } : {}),' },
   { id: 'Q15 model: prompt hash not recorded by the write-ahead event', file: 'src/commentModel.ts', from: '...(isPromptSha(ctx.promptSha) ? { lastBatchPromptSha: ctx.promptSha } : {}) };', to: '};' },
 ];
 mutants.push(...FINAL);
+const REVIEW = [
+  { id: 'R01 provider: no dedupe window', file: PROVIDER, from: ' || now() - issued > MAYBE_SENT_DEDUPE_WINDOW_MS) return fail', to: ') return fail' },
+  { id: 'R02 provider: missing issue time proceeds', file: PROVIDER, from: 'if (!Number.isFinite(issued) || now() - issued > MAYBE_SENT_DEDUPE_WINDOW_MS)', to: 'if (now() - issued > MAYBE_SENT_DEDUPE_WINDOW_MS)' },
+  { id: 'R03 provider: hash not bound to the thread', file: PROVIDER, from: '`${intake.threadId}\\n${plan.prompt}`', to: '`${plan.prompt}`' },
+  { id: 'R04 coordinator: outstanding sends not checked', file: COORD, from: 'if (earlier && earlier.issued.value && earlier.prompt !== request.prompt) return Promise.resolve(uncertain(', to: 'if (false) return Promise.resolve(uncertain(' },
+  { id: 'R05 coordinator: unknown errors after issue are definite', file: COORD, from: 'default: return issued ? uncertain(\'failed\', MESSAGES.unconfirmed) : rejected(\'failed\', MESSAGES.generic);', to: 'default: return rejected(\'failed\', MESSAGES.generic);' },
+  { id: 'R06 coordinator: attempt errors not marked issued', file: COORD, from: 'return mapSendError(error, true);', to: 'return mapSendError(error);' },
+  { id: 'R07 model: expired keeps no maybeSent', file: 'src/commentModel.ts', from: "send = { ...send, lastOutcome: 'failed', lastMessage: message, maybeSent: ctx.maybeSent === true ? true : send.maybeSent };\n      break;\n    case 'reload-recovered':", to: "send = { ...send, lastOutcome: 'failed', lastMessage: message };\n      break;\n    case 'reload-recovered':" },
+  { id: 'R08 provider: key failure reported as unsafe prompt', file: PROVIDER, from: "return fail('unavailable', MESSAGES.secretUnavailable);", to: "return fail('failed', MESSAGES.promptUnsafe);" },
+  { id: 'R09 store: batch secret label changed', file: 'src/commentStore.ts', from: "export const BATCH_SECRET_LABEL = 'threads-design/batch-boundary/v1';", to: "export const BATCH_SECRET_LABEL = 'threads-design/batch-boundary/v2';" },
+  { id: 'R10 model: issue time not stored', file: 'src/commentModel.ts', from: 'lastBatchAt: ctx.now, ', to: '' },
+  { id: 'R11 provider: maybeSent not passed to expired path for queued sends', file: PROVIDER, from: "{ event: 'expired', message: outcome.message }, outcome.maybeSent === true);\n        else if (outcome.status === 'cancelled')", to: "{ event: 'expired', message: outcome.message });\n        else if (outcome.status === 'cancelled')" },
+];
+mutants.push(...REVIEW);
 
 const FILES = ['test/batch-prompt.test.ts', 'test/batch-send.test.ts', 'test/send-coordinator-cancel.test.ts', 'test/send-coordinator.test.ts', 'test/element-prompt.test.ts', 'test/element-feedback-registration.test.ts', 'test/p2b-qa-prompt.test.ts', 'test/p2b-qa-send.test.ts', 'test/p2b-qa-coordinator.test.ts'];
 
@@ -115,8 +129,8 @@ for (let i = from; i < Math.min(to, mutants.length); i++) {
   const mutant = mutants[i];
   const original = readFileSync(mutant.file, 'utf8');
   const count = original.split(mutant.from).length - 1;
-  if (count !== 1) { console.log(`MUTANT ${mutant.id}: NOT APPLIED (pattern found ${count} times)`); mask |= 1 << (i - from); continue; }
-  writeFileSync(mutant.file, original.replace(mutant.from, () => mutant.to));
+  if (mutant.all ? count < 1 : count !== 1) { console.log(`MUTANT ${mutant.id}: NOT APPLIED (pattern found ${count} times)`); mask |= 1 << (i - from); continue; }
+  writeFileSync(mutant.file, mutant.all ? original.split(mutant.from).join(mutant.to) : original.replace(mutant.from, () => mutant.to));
   try {
     const result = runTests();
     const verdict = result.code !== 0 ? 'KILLED' : 'SURVIVED';

@@ -11,6 +11,8 @@ import type { ArtifactCommentsProvider } from '../src/geodeArtifactFeedbackV2';
 import type { ArtifactFeedbackRequest, ArtifactFeedbackTarget } from '../src/geodeArtifactFeedback';
 import { ATTEMPT_TIMEOUT_MS, createSendCoordinator, idempotencyKeyFor, PENDING_TTL_MS, type SendCoordinator } from '../src/sendCoordinator';
 import { boundaryToken } from '../src/elementPrompt';
+import { MAYBE_SENT_DEDUPE_WINDOW_MS } from '../src/artifactCommentsProvider';
+import { BATCH_SECRET_LABEL } from '../src/commentStore';
 import { createPluginDataGuard } from '../src/commentKey';
 import { createFakeApi, FakeApiError } from './helpers/fakeApi';
 import { createFakeClock } from './helpers/fakeClock';
@@ -1470,6 +1472,7 @@ describe('fix pass: vault-read blanking and unfenced lines', () => {
 const SECRET_LABEL = 'threads-design/batch-boundary/v1';
 const secretFor = (key: Uint8Array) => createHmac('sha256', key).update(SECRET_LABEL).digest('hex');
 const sha = (text: string) => createHash('sha256').update(text).digest('hex');
+const threadSha = (prompt: string) => sha(`t1\n${prompt}`);
 const spySends = () => vi.spyOn(fake.api.threads, 'send');
 const tokenOfPrompt = (prompt: string) => /^BEGIN-(bnd-[0-9a-f]{16})-1$/m.exec(prompt)![1];
 
@@ -1512,7 +1515,7 @@ describe('final fix: the batch secret comes from the install key', () => {
     const damaged = createPluginDataGuard({ loadData: async () => ({ commentsInstallKey: { v: 1, key: 'not-hex' } }), saveData: async () => undefined });
     useStack({ keys: damaged });
     const result = await send([1], rid('a'));
-    expect(result.status).toBe('rejected');
+    expect(result).toMatchObject({ status: 'rejected', reason: 'unavailable' });
     expect(fake.sends).toHaveLength(0);
     expect(await fs.readFile(commentsFile(), 'utf8')).toBe(bytes);
     controller.dispose(); coordinator.dispose();
@@ -1552,6 +1555,7 @@ describe('final fix: the batch secret comes from the install key', () => {
     await pins(2);
     ok<any>(await send([1, 2], rid('a')));
     expect(fake.sends[0].prompt).not.toContain(sha(fake.sends[0].prompt));
+    expect(fake.sends[0].prompt).not.toContain(threadSha(fake.sends[0].prompt));
   });
 
   it('hostile lastBatchPromptSha values in a hand-edited file are dropped, the file still loads, and a send works', async () => {
@@ -1755,5 +1759,107 @@ describe('final fix: the cancelled tombstone window restarts at the cancel', () 
     expect(await send([1], rid('a'))).toMatchObject({ status: 'rejected', reason: 'conflict' });
     nowMs = cancelAt + 10 * 60 * 1000 + 1;
     expect(ok<any>(await send([1], rid('a'))).outcome).toBe('sent');
+  });
+});
+
+
+describe('review fixes: persisted label, dedupe window, thread-bound hash, uncertain errors', () => {
+  it('the batch secret label is the persisted constant (renaming it would turn every pending retry into a conflict)', () => {
+    expect(BATCH_SECRET_LABEL).toBe(SECRET_LABEL);
+    expect(MAYBE_SENT_DEDUPE_WINDOW_MS).toBe(15 * 60 * 1000);
+  });
+
+  async function timedOutThenReloaded() {
+    await pins(1);
+    const spy = spySends();
+    const release = gateSends();
+    const first = send([1], rid('a'));
+    await waitPending(1);
+    await clock.advance(ATTEMPT_TIMEOUT_MS + 10);
+    await first;
+    release();
+    await settle();
+    controller.dispose(); coordinator.dispose();
+    useStack();
+    return spy;
+  }
+
+  it('the identical retry is allowed at exactly 15:00.000 after the write-ahead and refused (no send) at 15:00.001', async () => {
+    const spy = await timedOutThenReloaded();
+    nowMs = START_MS + MAYBE_SENT_DEDUPE_WINDOW_MS;
+    expect(ok<any>(await send([1], rid('a'))).outcome).toBe('sent');
+    expect(spy.mock.calls).toHaveLength(2);
+    expect(fake.sends).toHaveLength(1);
+  });
+
+  it('after the window the identical retry is a conflict that names the reason, writes nothing and sends nothing; a new request id still works', async () => {
+    const spy = await timedOutThenReloaded();
+    await list();
+    nowMs = START_MS + MAYBE_SENT_DEDUPE_WINDOW_MS + 1;
+    const bytes = await fs.readFile(commentsFile(), 'utf8');
+    expect(await send([1], rid('a'))).toMatchObject({ status: 'rejected', reason: 'conflict', message: expect.stringMatching(/may have been sent earlier/) });
+    expect(await fs.readFile(commentsFile(), 'utf8')).toBe(bytes);
+    expect(spy.mock.calls).toHaveLength(1);
+    expect(ok<any>(await send([1], rid('b'))).outcome).toBe('sent');
+  });
+
+  it('a maybe-sent comment with no recorded issue time fails closed', async () => {
+    const spy = await timedOutThenReloaded();
+    await rewriteComments(file => { delete file.comments[0].send.lastBatchAt; });
+    expect(await send([1], rid('a'))).toMatchObject({ status: 'rejected', reason: 'conflict' });
+    expect(spy.mock.calls).toHaveLength(1);
+  });
+
+  it('a garbage issue time fails closed too', async () => {
+    const spy = await timedOutThenReloaded();
+    await rewriteComments(file => { file.comments[0].send.lastBatchAt = 'yesterday-ish'; });
+    expect(await send([1], rid('a'))).toMatchObject({ status: 'rejected', reason: 'conflict' });
+    expect(spy.mock.calls).toHaveLength(1);
+  });
+
+  it('the window does not apply to comments that are not maybe-sent (a definite failure retried an hour later still works)', async () => {
+    await pins(1);
+    fake.sendErrors.push(new FakeApiError('INVALID_ARGUMENT'));
+    expect(await send([1], rid('a'))).toMatchObject({ status: 'rejected' });
+    nowMs = START_MS + 60 * 60 * 1000;
+    expect(ok<any>(await send([1], rid('a'))).outcome).toBe('sent');
+  });
+
+  it('errors after threads.send was called that carry no known code leave the comment maybe-sent; known definite codes do not', async () => {
+    await pins(2);
+    fake.sendErrors.push(new Error('socket hang up'));
+    expect(await send([1], rid('a'))).toMatchObject({ status: 'rejected' });
+    expect(await byId(1)).toMatchObject({ send: { lastOutcome: 'failed', maybeSent: true } });
+    fake.sendErrors.push(new FakeApiError('RUN_FAILED'));
+    expect(await send([2], rid('b'))).toMatchObject({ status: 'rejected' });
+    expect(await byId(2)).toMatchObject({ send: { lastOutcome: 'failed', maybeSent: false } });
+  });
+
+  it('an unknown error is retried safely with the identical prompt in the same process (host dedupes by key)', async () => {
+    await pins(1);
+    const spy = spySends();
+    fake.sendErrors.push(new Error('socket hang up'));
+    await send([1], rid('a'));
+    expect(ok<any>(await send([1], rid('a'))).outcome).toBe('sent');
+    const keys = new Set(spy.mock.calls.map(c => (c[1] as { idempotencyKey: string }).idempotencyKey));
+    expect(keys.size).toBe(1);
+  });
+
+  it('a queued batch that dies with an uncertain outcome (expired path) keeps maybeSent when the coordinator says so', async () => {
+    await pins(1);
+    running(true);
+    ok(await send([1], rid('a')));
+    await clock.advance(PENDING_TTL_MS + 1);
+    await settle();
+    expect(await byId(1)).toMatchObject({ status: 'open', send: { lastOutcome: 'failed', maybeSent: false } });
+  });
+
+  it('the unreadable-key failure names the key, not "could not be made safe"', async () => {
+    await pins(1);
+    controller.dispose(); coordinator.dispose();
+    useStack({ keys: { getKey: async () => { throw new Error('keychain gone'); } } });
+    const result = await send([1], rid('a'));
+    expect(result).toMatchObject({ status: 'rejected' });
+    expect(JSON.stringify(result)).not.toMatch(/safe to send/);
   });
 });

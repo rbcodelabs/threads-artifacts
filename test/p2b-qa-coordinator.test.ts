@@ -224,3 +224,59 @@ describe('isBusy', () => {
     expect(coordinator.pendingCount, 'orphan slot after the caller was told it failed').toBe(0);
   });
 });
+
+
+describe('review fixes: an attempt that timed out stays outstanding while its send may still land', () => {
+  async function timedOut() {
+    const ctxt = setup();
+    let release!: () => void;
+    ctxt.fake.state.gate = new Promise<void>(resolve => { release = resolve; });
+    const first = ctxt.coordinator.submit(req('req_a', 'prompt-one'));
+    await ctxt.clock.flush();
+    await ctxt.clock.advance(ATTEMPT_TIMEOUT_MS + 1);
+    expect(await first).toMatchObject({ status: 'rejected', reason: 'failed', maybeSent: true });
+    return { ...ctxt, release };
+  }
+
+  it('a retry of the same request with a DIFFERENT prompt is refused as maybe-sent while the first send is outstanding', async () => {
+    const { coordinator, fake } = await timedOut();
+    expect(await coordinator.submit(req('req_a', 'prompt-two'))).toMatchObject({ status: 'rejected', reason: 'busy', maybeSent: true });
+    expect(fake.sends).toHaveLength(0);
+  });
+
+  it('the same request with the SAME prompt is allowed (same idempotency key), and a different request is independent', async () => {
+    const { coordinator, release, clock, fake } = await timedOut();
+    const same = coordinator.submit(req('req_a', 'prompt-one'));
+    const other = coordinator.submit(req('req_b', 'other-message', 'art-2'));
+    release();
+    await clock.flush();
+    expect(await same).toEqual({ status: 'sent' });
+    expect(await other).toEqual({ status: 'sent' });
+    expect(fake.sends.filter(s => s.prompt === 'prompt-one')).toHaveLength(1);
+  });
+
+  it('once the outstanding send settles the different prompt is allowed again', async () => {
+    const { coordinator, release, clock } = await timedOut();
+    release();
+    await clock.flush(); await clock.advance(10);
+    expect(await coordinator.submit(req('req_a', 'prompt-two'))).toEqual({ status: 'sent' });
+  });
+
+  it('a send that never issued (timeout while threads.get hangs) does not block a different prompt', async () => {
+    const { fake, clock, coordinator, gate } = setup({ holdGet: true });
+    fake.threads.get('t1')!.isRunning = false;
+    gate.hold = true;
+    const first = coordinator.submit(req('req_a', 'prompt-one'));
+    await clock.flush();
+    await clock.advance(ATTEMPT_TIMEOUT_MS + 1);
+    await first;
+    gate.hold = false; gate.release();
+    expect(await coordinator.submit(req('req_a', 'prompt-two'))).toEqual({ status: 'sent' });
+  });
+
+  it('dispose clears outstanding records', async () => {
+    const { coordinator } = await timedOut();
+    coordinator.dispose();
+    expect(await coordinator.submit(req('req_a', 'prompt-two'))).toMatchObject({ status: 'rejected', reason: 'unavailable' });
+  });
+});
