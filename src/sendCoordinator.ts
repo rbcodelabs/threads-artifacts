@@ -33,7 +33,7 @@ const MESSAGES = {
   runFailed: 'The agent could not start this message. Check the thread, then try again.',
   unavailable: 'Agent Threads is not available right now. Try again in a moment.',
   generic: 'Could not send to the thread. Try again.',
-  unconfirmed: 'Could not confirm the send. It may have reached the thread; check the thread before retrying.',
+  unconfirmed: 'Could not send to the thread, but the message may nevertheless have reached it. Check the thread before retrying.',
   stillSending: 'The earlier attempt may still be reaching the thread. Wait a moment, then try again.',
   disposed: 'Design is shutting down. Try again once it has reloaded.',
   statusUnknown: 'Design reloaded while sending. The comment may already have reached the thread; check the thread before retrying.',

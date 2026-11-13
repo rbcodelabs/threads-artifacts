@@ -1531,18 +1531,18 @@ describe('final fix: the batch secret comes from the install key', () => {
     expect(fake.sends).toHaveLength(0);
   });
 
-  it('prompt hash (a): comments.json holds sha256 of the exact sent prompt for every member', async () => {
+  it('prompt hash (a): comments.json holds sha256(threadId, newline, prompt) of the exact sent prompt for every member (bound to the thread)', async () => {
     await pins(2);
     ok<any>(await send([1, 2], rid('a')));
     const file = JSON.parse(await fs.readFile(commentsFile(), 'utf8'));
-    const expected = sha(fake.sends[0].prompt);
+    const expected = sha(`t1\n${fake.sends[0].prompt}`);
     for (const c of file.comments) expect(c.send.lastBatchPromptSha).toBe(expected);
   });
 
   it('prompt hash (b): no public comment, snapshot or report carries the hash field or its value', async () => {
     await pins(2);
     const report = ok<any>(await send([1, 2], rid('a')));
-    const expected = sha(fake.sends[0].prompt);
+    const expected = sha(`t1\n${fake.sends[0].prompt}`);
     const publicView = JSON.stringify([await list(), report, await provider.get(target, cmtId(1), ctx())]);
     expect(publicView).not.toMatch(/PromptSha|promptSha/);
     expect(publicView).not.toContain(expected);
