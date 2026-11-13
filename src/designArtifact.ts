@@ -311,6 +311,7 @@ ${MODE_OVERRIDE}
 - Do not use iframes, object or embed elements, or remote content on the board. Build each preview as scoped markup and CSS (for example a 1440px-wide inner canvas under .variation-a, scaled down with a CSS transform) so the board renders correctly as one static page and in a single screenshot.
 - Each panel links to its full snapshot (for example variations/A/index.html) and states the exact follow-up command to choose it, for example: /design pick: A
 - If the artifact already contains a design, the directions are alternatives for it: keep its content and information architecture unless the brief says otherwise.
+- Every snapshot page variations/<LETTER>/index.html must include a clearly visible, accessible "All options" link back to the board at the relative path ../../index.html (never an absolute path or a /design command). Mark it with the attribute data-board-link on the anchor so it can be found again. Make it small and unobtrusive, without changing the direction's own design: either a fixed link in a corner or a slim top strip, with enough contrast on the direction's own background, a visible focus style, keyboard focusable as a normal link in a sensible tab position, and a touch target of at least 44px on mobile. It must not cover or push the direction's own content or controls, so it is not clipped at any width, and it must be visible in the captured screenshot state of the snapshot. Do not add the link to the root board.
 - If a previous variations/ folder exists, replace its contents.`,
   pick: `Mode: pick
 ${MODE_OVERRIDE}
@@ -318,7 +319,8 @@ ${MODE_OVERRIDE}
 - Read variations/<LETTER>/ for that letter. If it does not exist, stop and tell the user which variation letters do exist instead of inventing a direction.
 - Otherwise promote that direction into the root index.html, styles.css, and app.js as a fully built-out, polished page: complete every section, state, and mobile layout that the board preview omitted.
 - Apply any notes from the brief; they may reference other variations' folders.
-- Remove the comparison board from the root files, but keep the entire variations/ folder intact so the user can pick again.`,
+- Remove the comparison board from the root files, but keep the entire variations/ folder intact so the user can pick again.
+- The variation snapshot contains an "All options" back link to the board (the anchor with data-board-link). Do not copy it into the root: remove that anchor and any styles and markup that exist only for it from the promoted root files, so the promoted root files have no link to the board. Leave the link in variations/<LETTER>/index.html untouched. Check the root files for any other link to variations/ or ../../index.html and remove it too.`,
   spec: `Mode: spec
 ${MODE_OVERRIDE}
 - This is an overlay, not a redesign. Do not rewrite index.html, styles.css, or app.js content or layout; the existing design must render exactly as it does today with the overlay off.

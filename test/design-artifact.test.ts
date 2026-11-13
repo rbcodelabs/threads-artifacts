@@ -143,8 +143,8 @@ describe('design artifact contract', () => {
     it.each([
       ['wireframe', ['Grayscale only', 'labeled gray placeholder boxes', 'never lorem ipsum', 'desktop and mobile', 'reduce it to its wireframe structure']],
       ['states', ['component state sheet', 'focus-visible', 'overflow (very long content)', 'light and dark themes side by side', '.is-hover', 'naming the component']],
-      ['variations', ['3 genuinely distinct design directions', 'never more than 4', 'Recolors of one layout do not count', 'variations/<LETTER>/index.html', 'comparison board', 'Do not use iframes', '1440px-wide inner canvas under .variation-a', '/design pick: A', 'replace its contents']],
-      ['pick', ['Read variations/<LETTER>/', 'which variation letters do exist', 'fully built-out, polished page', 'keep the entire variations/ folder intact', 'Remove the comparison board']],
+      ['variations', ['3 genuinely distinct design directions', 'never more than 4', 'Recolors of one layout do not count', 'variations/<LETTER>/index.html', 'comparison board', 'Do not use iframes', '1440px-wide inner canvas under .variation-a', '/design pick: A', 'replace its contents', 'All options', '../../index.html', 'data-board-link', 'without changing the direction\'s own design', 'keyboard focusable']],
+      ['pick', ['Read variations/<LETTER>/', 'which variation letters do exist', 'fully built-out, polished page', 'keep the entire variations/ folder intact', 'Remove the comparison board', 'data-board-link', 'All options', 'no link to the board']],
       ['spec', ['This is an overlay, not a redesign', 'spec.css and spec.js', 'Pressing S', '"Show spec" button', 'must never shift layout or reflow', 'desktop and mobile layouts already in the design']],
       ['report', ['This is a document, not an app screen', 'window.REPORT_DATA', 'REPORT_DATA.charts.<key>', '"stacked-bar", "grouped-bar" or "line"', 'data-chart="<key>"', "connect-src 'none'", 'data table beneath', 'Keep all data local', 'Claude Docs or Google Docs', 'edits to this same report', 'Never scaffold a second document', 'if the vault uses daily notes (check the daily-notes settings file or an existing Daily/ folder)', '"## Claude Sessions"', 'Create the heading if it is missing', 'update it in place', 'never add a duplicate link', 'If the vault has no daily notes, skip this step and do not create one', 'begin with a short plain title phrase (under 60 characters, no "Title:" prefix, no file paths)', 'edit files only with the Edit and Write tools', 'Never patch files with sed, shell heredocs or String.replace on text containing "$"', 'Never chain fallbacks that can apply an edit twice', 'After EVERY change run "node --check data.js"', 'no duplicate ids', "uniq -d"]],
       ['storyboard', ['product flow storyboard', 'video storyboard', 'storyboard.json', 'storyboard.js', 'window.STORYBOARD', "connect-src 'none'", 'single source of truth', 'trigger or branch label', 'total runtime', 'voiceover', 'keyboard arrows', 'edit captions inline', 'clipboard is disabled', 'read-only markdown view', 'storyboard.md', 'Regenerate it', 'DESIGN.md']],
@@ -155,6 +155,19 @@ describe('design artifact contract', () => {
       for (const phrase of phrases) expect(message).toContain(phrase);
       const section = message.slice(message.indexOf(`Mode: ${mode}`), message.indexOf('Artifact rules:'));
       expect(message.replace(section, '')).toBe(base);
+    });
+
+    it('keeps the variation back link and its pick-mode cleanup tied to the same marker', () => {
+      const variations = designKickoffMessage(artifact, 'x', 'variations');
+      const pick = designKickoffMessage(artifact, 'x', 'pick');
+      expect(variations).toMatch(/visible in the captured screenshot/);
+      expect(variations).toMatch(/not clipped/);
+      expect(variations).toContain('Do not add the link to the root board');
+      expect(pick).toMatch(/promoted root files .* no link to the board/s);
+    });
+
+    it.each(['storyboard', 'report', 'states', 'wireframe', 'spec'] as const)('%s mode needs no board back link (single page)', (mode) => {
+      expect(designKickoffMessage(artifact, 'x', mode)).not.toContain('data-board-link');
     });
   });
 });
