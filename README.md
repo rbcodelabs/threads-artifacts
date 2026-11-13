@@ -1,4 +1,4 @@
-# Design for Agent Threads
+# Artifacts for Agent Threads
 
 Desktop-only peer plugin that adds UI design artifacts to Agent Threads: simple static HTML pages, or full Next.js app prototypes that can be exported back to static HTML.
 
@@ -9,7 +9,7 @@ Desktop-only peer plugin that adds UI design artifacts to Agent Threads: simple 
 
 Interactive preview and screenshot capture require Geode's artifact runtime. In Obsidian, Preview reveals the artifact source in the file manager instead.
 
-Enable Agent Threads first, then enable **Design for Agent Threads**. The plugin registers:
+Enable Agent Threads first, then enable **Artifacts for Agent Threads**. The plugin registers:
 
 - `/design [--nextjs] <brief>` in existing-thread and new-thread composers
 - the `EnterDesignMode` agent tool (`brief`, optional `mode`, optional `runtime`)
@@ -124,9 +124,9 @@ Known limitations: idempotency is in memory, so if Geode times out a send that d
 
 This repository is private; downloading releases requires repository access.
 
-1. Download `main.js` and `manifest.json` from the [latest release](https://github.com/rbcodelabs/threads-design/releases/latest).
-2. Put both files in `<vault>/.geode/plugins/threads-design/` for Geode, or `<vault>/.obsidian/plugins/threads-design/` for Obsidian.
-3. Update and enable Agent Threads first, then enable **Design for Agent Threads** in the host's plugin settings. Restart the host if the new plugin is not listed.
+1. Download `main.js` and `manifest.json` from the [latest release](https://github.com/rbcodelabs/threads-artifacts/releases/latest).
+2. Put both files in `<vault>/.geode/plugins/threads-artifacts/` for Geode, or `<vault>/.obsidian/plugins/threads-artifacts/` for Obsidian.
+3. Update and enable Agent Threads first, then enable **Artifacts for Agent Threads** in the host's plugin settings. Restart the host if the new plugin is not listed.
 4. Start a new conversation and submit `/design a simple settings page` to check the installation. Geode opens the interactive preview; Obsidian reveals the generated source.
 
 Existing design artifacts do not need to be moved. Without this plugin, Agent Threads v0.43.0 retains source access to legacy artifacts but no longer supplies `/design` or `EnterDesignMode` itself.

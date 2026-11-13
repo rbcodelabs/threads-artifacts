@@ -1,7 +1,7 @@
 import * as path from 'node:path';
 import type { AgentThreadsApiV1, PeerIdentity, ThreadArtifactRef } from './contracts';
 import type { DesignArtifact } from './designArtifact';
-import { DESIGN_ARTIFACT_KIND, DESIGN_PROVIDER_ID } from './designArtifactProvider';
+import { DESIGN_ARTIFACT_KIND, DESIGN_PROVIDER_ID, DESIGN_STORAGE_NAMESPACE } from './designArtifactProvider';
 import { designFolderName, isVisibleArtifactPath } from './designStorage';
 
 /** Minimal fs surface so migration is testable without touching disk. */
@@ -99,7 +99,7 @@ export async function migrateHiddenDesigns({ api, fs, owner, hiddenRoot }: Migra
       const allocation = await api.artifacts.allocateStorage(manifest.threadId, manifest.id, {
         location: 'visible',
         folderName: designFolderName(manifest.title || ref.title, manifest.id),
-        owner: { pluginId: owner.pluginId },
+        owner: { pluginId: DESIGN_STORAGE_NAMESPACE },
       });
       if (!allocation.success) { result.failed++; continue; }
       // Host without visible storage: nothing can move, and every other design would get the same answer.

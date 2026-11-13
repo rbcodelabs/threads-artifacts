@@ -1,6 +1,6 @@
 {
-  "id": "threads-design",
-  "name": "Design for Agent Threads",
+  "id": "threads-artifacts",
+  "name": "Artifacts for Agent Threads",
   "version": "0.8.2",
   "minAppVersion": "1.7.2",
   "description": "Create and revise static UI artifacts through Agent Threads.",

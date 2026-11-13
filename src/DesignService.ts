@@ -18,6 +18,7 @@ import {
   DESIGN_ARTIFACT_SCHEMA_VERSION,
   DESIGN_PROVIDER_ID,
   DESIGN_PROVIDER_OWNER,
+  DESIGN_STORAGE_NAMESPACE,
 } from './designArtifactProvider';
 import type { DesignGuidance, DesignGuidanceReader } from './designGuidance';
 import type { DesignMode } from './designModes';
@@ -118,7 +119,7 @@ export class DesignService {
         const allocation = await this.api.artifacts.allocateStorage(threadId, artifactId, {
           location: 'visible',
           folderName: designFolderName(designTitle(brief), artifactId),
-          owner: { pluginId: DESIGN_PROVIDER_OWNER.pluginId },
+          owner: { pluginId: DESIGN_STORAGE_NAMESPACE },
         });
         if (!allocation.success) throw new Error(allocation.message);
         allocatedRoot = allocation.path;
