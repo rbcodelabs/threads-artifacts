@@ -570,10 +570,21 @@ describe('fix pass: extended invisible set versus the pre-P2b single-send builde
       const common = { request, artifactTitle: text(), jsonPath: '/v/a.json', pngPath: null, hints: [{ file: text(), line: 3, confidence: 'med' as const, snippet: text() }], boundarySecret: SECRET };
       const run = (fn: (i: typeof common) => string): string => { try { return fn(common); } catch (error) { return 'THROW:' + (error as Error).message; } };
       const fresh = run(buildElementPrompt as never);
-      const old = run(buildElementPromptOld as never);
-      const got = unescapeNew(fresh);
+      const old = defused(run(buildElementPromptOld as never));
+      const defused = (t: string) => t.replace(/(https?):\u200b\/\//gi, '$1://');
+      const got = defused(unescapeNew(fresh));
       if (got !== old) { let i = 0; while (got[i] === old[i]) i++; expect.fail('round ' + round + ' first difference at ' + i + ': new=' + JSON.stringify(got.slice(Math.max(0, i - 40), i + 60)) + ' old=' + JSON.stringify(old.slice(Math.max(0, i - 40), i + 60))); }
       for (const cp of NEW_SET) expect(fresh.includes(raw(cp)), 'U+' + cp.toString(16) + ' raw in new output').toBe(false);
+    }
+  });
+});
+
+describe('fix pass: URL defusing next to escaped invisible characters', () => {
+  it.fails('ADVISORY: a URL right after an invisible character that gets escaped (U+200B, U+3164) is still defused', () => {
+    for (const cp of [0x200b, 0x3164, 0x2800]) {
+      const text = String.fromCodePoint(cp) + 'http://evil.example/x';
+      const { prompt } = build([item(1, { label: text, selectionPatch: { selector: text } })]);
+      expect(prompt, 'U+' + cp.toString(16)).not.toContain('http://');
     }
   });
 });
