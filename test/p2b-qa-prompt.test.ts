@@ -590,3 +590,32 @@ describe('fix pass: URL defusing next to escaped invisible characters', () => {
     }
   });
 });
+
+describe('final fix: URL defusing after any escaped invisible character', () => {
+  const SET = [0x200b, 0x200d, 0x202e, 0x2066, 0xfeff, 0x00ad, 0x061c, 0x034f, 0x115f, 0x1160, 0x17b4, 0x180e, 0x206a, 0x2800, 0x3164, 0xfe0f, 0xffa0, 0x1d173, 0xe0041, 0xe0100, 0x0085, 0x2028];
+  it('https and http, upper and mixed case, after every escaped character, in the label and the selector and an alternate, are defused', () => {
+    for (const cp of SET) {
+      for (const scheme of ['http', 'https', 'HTTPS', 'hTtP']) {
+        const text = 'a' + String.fromCodePoint(cp) + scheme + '://evil.example/x';
+        const { prompt } = build([item(1, { label: text, selectionPatch: { selector: text, selectorAlternates: [text] } })]);
+        expect(prompt.toLowerCase(), 'U+' + cp.toString(16) + ' ' + scheme).not.toMatch(/https?:\/\//);
+      }
+    }
+  });
+  it('two in a row and with ordinary text around are all defused, and a plain URL still is', () => {
+    const z = String.fromCodePoint(0x200b);
+    const text = 'x ' + z + 'http://a ' + z + z + 'https://b http://c ' + z + 'http://d';
+    const { prompt } = build([item(1, { label: text })]);
+    expect(prompt.toLowerCase()).not.toMatch(/https?:\/\//);
+  });
+  it('input that merely looks like an escape (a literal backslash-u text) is handled without error and still defused', () => {
+    const { prompt } = build([item(1, { label: '\\u12zzhttp://x \\u{110000}http://y \\u12http://z' })]);
+    expect(prompt).toBeTruthy();
+  });
+  it('pathological lookbehind input stays fast', () => {
+    const text = '\\u200b'.repeat(40_000) + 'http://x';
+    const started = performance.now();
+    build([item(1, { label: text, selectionPatch: { selector: text } })]);
+    expect(performance.now() - started).toBeLessThan(2000);
+  });
+});

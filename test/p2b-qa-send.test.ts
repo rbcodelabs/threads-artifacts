@@ -1,3 +1,4 @@
+import { createHash, createHmac } from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -8,7 +9,9 @@ import { createCommentStore, type CommentRootHandle, type CommentStore } from '.
 import { buildDesignManifest } from '../src/designArtifact';
 import type { ArtifactCommentsProvider } from '../src/geodeArtifactFeedbackV2';
 import type { ArtifactFeedbackRequest, ArtifactFeedbackTarget } from '../src/geodeArtifactFeedback';
-import { ATTEMPT_TIMEOUT_MS, createSendCoordinator, PENDING_TTL_MS, type SendCoordinator } from '../src/sendCoordinator';
+import { ATTEMPT_TIMEOUT_MS, createSendCoordinator, idempotencyKeyFor, PENDING_TTL_MS, type SendCoordinator } from '../src/sendCoordinator';
+import { boundaryToken } from '../src/elementPrompt';
+import { createPluginDataGuard } from '../src/commentKey';
 import { createFakeApi, FakeApiError } from './helpers/fakeApi';
 import { createFakeClock } from './helpers/fakeClock';
 import { cmtId, KEY, OTHER_KEY, selId, stored } from './helpers/commentFixtures';
@@ -92,10 +95,10 @@ function wrapStore(real: CommentStore, hooks: Hooks): CommentStore {
   };
 }
 
-interface StackOptions { maxPromptLength?: number; boundarySecret?: string; hooks?: Hooks; coordApi?: any; escalation?: () => { keywords: readonly string[]; known: boolean } }
+interface StackOptions { keys?: { getKey(): Promise<Uint8Array> }; maxPromptLength?: number; boundarySecret?: string; hooks?: Hooks; coordApi?: any; escalation?: () => { keywords: readonly string[]; known: boolean } }
 
 function makeStack(extra: StackOptions = {}) {
-  const realStore = createCommentStore({ keys: { getKey: async () => KEY }, now: () => new Date(START_MS) });
+  const realStore = createCommentStore({ keys: extra.keys ?? { getKey: async () => KEY }, now: () => new Date(START_MS) });
   const store = extra.hooks ? wrapStore(realStore, extra.hooks) : realStore;
   let ctl!: CommentsProviderController;
   const coord = createSendCoordinator({ api: extra.coordApi ?? fake.api, ownerPluginId: 'threads-design', clock, onDeferredResult: result => { void ctl.handleDeferredResult(result); } });
@@ -1456,5 +1459,290 @@ describe('fix pass: vault-read blanking and unfenced lines', () => {
     const prompt = fake.sends[0].prompt;
     expect((prompt.match(/^artifact folder: /gm) ?? []).length).toBe(2);
     expect(prompt).toContain(`Full payload: ".threads-design/selections/${selId(1)}.json"`);
+  });
+});
+
+
+// =============================================================================================
+// Final integrated fix (933eaeb2): maybeSent on timeout, prompt hash, stable batch secret, tombstone window
+// =============================================================================================
+
+const SECRET_LABEL = 'threads-design/batch-boundary/v1';
+const secretFor = (key: Uint8Array) => createHmac('sha256', key).update(SECRET_LABEL).digest('hex');
+const sha = (text: string) => createHash('sha256').update(text).digest('hex');
+const spySends = () => vi.spyOn(fake.api.threads, 'send');
+const tokenOfPrompt = (prompt: string) => /^BEGIN-(bnd-[0-9a-f]{16})-1$/m.exec(prompt)![1];
+
+describe('final fix: the batch secret comes from the install key', () => {
+  it('the boundary token is boundaryToken(HMAC(install key, fixed label), requestId): derivation matches the documented rule', async () => {
+    await pins(1);
+    ok(await send([1], rid('a')));
+    expect(tokenOfPrompt(fake.sends[0].prompt)).toBe(boundaryToken(secretFor(KEY), rid('a'), 0));
+  });
+
+  it('stable across a handle re-open and a full reload: the same request id rebuilds the byte-identical prompt', async () => {
+    await pins(1);
+    const spy = spySends();
+    ok(await send([1], rid('a')));
+    controller.dispose(); coordinator.dispose();
+    useStack();
+    ok(await send([1], rid('a'), { resend: true }));
+    const prompts = spy.mock.calls.map(call => (call[1] as { prompt: string }).prompt);
+    expect(prompts).toHaveLength(2);
+    expect(prompts[1]).toBe(prompts[0]);
+    expect(fake.sends).toHaveLength(1);
+  });
+
+  it('a different request id gets a different token; the secret itself is in no prompt, no comments.json, no public result', async () => {
+    await pins(2);
+    const reports = [ok<any>(await send([1], rid('a'))), ok<any>(await send([2], rid('b')))];
+    expect(tokenOfPrompt(fake.sends[0].prompt)).not.toBe(tokenOfPrompt(fake.sends[1].prompt));
+    const secret = secretFor(KEY);
+    const everything = JSON.stringify([fake.sends, reports, await list(), await fs.readFile(commentsFile(), 'utf8'), warnings]);
+    expect(everything).not.toContain(secret);
+    expect(everything).not.toContain(Buffer.from(KEY).toString('hex'));
+    // the full HMAC of the request id is not shown either, only its 16-hex prefix inside the token
+    expect(everything).not.toContain(createHmac('sha256', secret).update(rid('a')).digest('hex'));
+  });
+
+  it('an unreadable or damaged install key fails closed: nothing is sent, nothing is written, no exception', async () => {
+    await pins(1);
+    const bytes = await fs.readFile(commentsFile(), 'utf8');
+    controller.dispose(); coordinator.dispose();
+    const damaged = createPluginDataGuard({ loadData: async () => ({ commentsInstallKey: { v: 1, key: 'not-hex' } }), saveData: async () => undefined });
+    useStack({ keys: damaged });
+    const result = await send([1], rid('a'));
+    expect(result.status).toBe('rejected');
+    expect(fake.sends).toHaveLength(0);
+    expect(await fs.readFile(commentsFile(), 'utf8')).toBe(bytes);
+    controller.dispose(); coordinator.dispose();
+    useStack({ keys: { getKey: async () => { throw new Error('keychain gone'); } } });
+    expect((await send([1], rid('b'))).status).toBe('rejected');
+    expect(fake.sends).toHaveLength(0);
+  });
+
+  it('a regenerated install key orphans the old comments as foreign: they are skipped, nothing is sent', async () => {
+    await pins(2);
+    controller.dispose(); coordinator.dispose();
+    useStack({ keys: { getKey: async () => OTHER_KEY } });
+    const report = ok<any>(await send([1, 2], rid('a')));
+    expect(report.outcome).toBe('none');
+    expect(report.items.map((i: any) => i.reason)).toEqual(['foreign', 'foreign']);
+    expect(fake.sends).toHaveLength(0);
+  });
+
+  it('the stored prompt hash is plugin-private: it equals sha256 of the exact sent prompt in comments.json and appears in no public comment or report', async () => {
+    await pins(2);
+    const report = ok<any>(await send([1, 2], rid('a')));
+    const file = JSON.parse(await fs.readFile(commentsFile(), 'utf8'));
+    const expected = sha(fake.sends[0].prompt);
+    for (const c of file.comments) expect(c.send.lastBatchPromptSha).toBe(expected);
+    const publicView = JSON.stringify([await list(), report, await provider.get(target, cmtId(1), ctx())]);
+    expect(publicView).not.toMatch(/PromptSha|promptSha/);
+    expect(publicView).not.toContain(expected);
+    expect(fake.sends[0].prompt).not.toContain(expected);
+  });
+
+  it('hostile lastBatchPromptSha values in a hand-edited file are dropped, the file still loads, and a send works', async () => {
+    await pins(1);
+    for (const bad of [{ x: 1 }, 'A'.repeat(64), 'zz', 5, null, 'f'.repeat(65)]) {
+      await rewriteComments(file => { file.comments[0].send.lastBatchPromptSha = bad; });
+      expect((await byId(1)).status).toBe('open');
+    }
+    expect(ok<any>(await send([1], rid('a'))).outcome).toBe('sent');
+  });
+
+  it('the host idempotency key is design:<thread>:sha256(prompt)[0..32]: the same prompt dedupes, any change gets another key', async () => {
+    await pins(2);
+    const spy = spySends();
+    ok(await send([1], rid('a')));
+    ok(await send([2], rid('b')));
+    const [first, second] = spy.mock.calls.map(call => call[1] as { prompt: string; idempotencyKey: string });
+    expect(first.idempotencyKey).toBe(idempotencyKeyFor('t1', first.prompt));
+    expect(first.idempotencyKey).toBe(`design:t1:${sha(first.prompt).slice(0, 32)}`);
+    expect(second.idempotencyKey).not.toBe(first.idempotencyKey);
+  });
+});
+
+describe('final fix: timeouts and reload-mid-send are flagged maybe-sent', () => {
+  it('a timeout while threads.get hangs (the send was never issued) is flagged too, the conservative side', async () => {
+    const { coordApi, gate } = heldCoordApi('get');
+    controller.dispose(); coordinator.dispose();
+    useStack({ coordApi });
+    await pins(1);
+    gate.hold = true;
+    const first = send([1], rid('a'));
+    await waitPending(1);
+    await clock.advance(ATTEMPT_TIMEOUT_MS + 10);
+    await first;
+    expect(await byId(1)).toMatchObject({ status: 'open', send: { lastOutcome: 'failed', maybeSent: true } });
+    gate.hold = false; gate.release();
+    await settle();
+    // identical retry proceeds (nothing reached the host) under the same key
+    expect(ok<any>(await send([1], rid('a'))).outcome).toBe('sent');
+    expect(fake.sends).toHaveLength(1);
+  });
+
+  it('a DEFINITE failure is not flagged, and can be retried with edited text under the same request id', async () => {
+    await pins(1);
+    fake.sendErrors.push(new FakeApiError('INVALID_ARGUMENT'));
+    expect(await send([1], rid('a'))).toMatchObject({ status: 'rejected' });
+    expect(await byId(1)).toMatchObject({ send: { lastOutcome: 'failed', maybeSent: false } });
+    const c = await byId(1);
+    ok(await provider.update(target, { id: cmtId(1), expectedVersion: c.version, change: { text: 'EDITED-AFTER-DEFINITE-FAILURE' } }, ctx()));
+    expect(ok<any>(await send([1], rid('a'))).outcome).toBe('sent');
+    expect(fake.sends[0].prompt).toContain('EDITED-AFTER-DEFINITE-FAILURE');
+  });
+
+  it('a maybe-sent comment whose identical retry then fails definitely stays maybe-sent (the earlier message may still exist)', async () => {
+    await pins(1);
+    const release = gateSends();
+    const first = send([1], rid('a'));
+    await waitPending(1);
+    await clock.advance(ATTEMPT_TIMEOUT_MS + 10);
+    await first;
+    release();
+    await settle();
+    (fake.api.threads as any).send = async () => { throw new FakeApiError('INVALID_ARGUMENT'); };
+    expect(await send([1], rid('a'))).toMatchObject({ status: 'rejected' });
+    expect(await byId(1)).toMatchObject({ send: { maybeSent: true } });
+  });
+
+  it('in the same process: timeout, edit, same request id is a conflict with no new threads.send; a new request id sends', async () => {
+    await pins(1);
+    const spy = spySends();
+    const release = gateSends();
+    const first = send([1], rid('a'));
+    await waitPending(1);
+    await clock.advance(ATTEMPT_TIMEOUT_MS + 10);
+    await first;
+    release();
+    await settle();
+    const c = await byId(1);
+    ok(await provider.update(target, { id: cmtId(1), expectedVersion: c.version, change: { text: 'Edited after the timeout' } }, ctx()));
+    expect(await send([1], rid('a'))).toMatchObject({ status: 'rejected', reason: 'conflict' });
+    expect(spy.mock.calls).toHaveLength(1);
+    expect(ok<any>(await send([1], rid('b'))).outcome).toBe('sent');
+  });
+});
+
+describe('final fix: the retry rule after a reload (identical prompt dedupes, anything else conflicts)', () => {
+  async function timedOutThenReload(count = 2) {
+    await pins(count);
+    const spy = spySends();
+    const release = gateSends();
+    const first = send(Array.from({ length: count }, (_, i) => i + 1), rid('a'));
+    await waitPending(1);
+    await clock.advance(ATTEMPT_TIMEOUT_MS + 10);
+    await first;
+    release();
+    await settle();
+    expect(fake.sends).toHaveLength(1);
+    controller.dispose(); coordinator.dispose();
+    useStack();
+    return spy;
+  }
+
+  it('hint drift: the agent edited the artifact after the first message, so the rebuilt prompt differs: conflict, no duplicate', async () => {
+    const spy = await timedOutThenReload();
+    await fs.writeFile(path.join(root, 'index.html'), '<main class="changed-by-the-agent"><h1 id="hero-title" class="now-bigger">Build faster</h1></main>\n');
+    const retry = await send([1, 2], rid('a'));
+    expect(retry, 'the rebuilt prompt differs, so it must not be sent').toMatchObject({ status: 'rejected', reason: 'conflict' });
+    expect(spy.mock.calls).toHaveLength(1);
+    expect(fake.sends, 'never a second message').toHaveLength(1);
+  });
+
+  it('different anchor states on the retry change the prompt: conflict, no duplicate', async () => {
+    await timedOutThenReload();
+    const retry = await send([1, 2], rid('a'), { anchorStates: { [cmtId(1)]: 'detached' } });
+    expect(retry).toMatchObject({ status: 'rejected', reason: 'conflict' });
+    expect(fake.sends).toHaveLength(1);
+  });
+
+  it('two identical retries in a row: one message in total, the second is answered as already sent', async () => {
+    const spy = await timedOutThenReload();
+    expect(ok<any>(await send([1, 2], rid('a'))).outcome).toBe('sent');
+    const again = ok<any>(await send([1, 2], rid('a')));
+    expect(again.outcome).toBe('sent');
+    expect(fake.sends).toHaveLength(1);
+    expect(spy.mock.calls).toHaveLength(2);
+  });
+
+  it('after a conflict the maybe-sent flag and the conflict persist (stable), and a new request id is the way out', async () => {
+    await timedOutThenReload();
+    const c = await byId(1);
+    ok(await provider.update(target, { id: cmtId(1), expectedVersion: c.version, change: { text: 'changed' } }, ctx()));
+    for (let i = 0; i < 2; i++) expect(await send([1, 2], rid('a'))).toMatchObject({ status: 'rejected', reason: 'conflict' });
+    expect(await byId(2)).toMatchObject({ status: 'open', send: { maybeSent: true } });
+    expect(ok<any>(await send([1, 2], rid('c'))).outcome).toBe('sent');
+    expect(fake.sends).toHaveLength(2);
+  });
+
+  it('a comment pinned AFTER the reload added to the retry changes the ids: conflict', async () => {
+    await timedOutThenReload();
+    await pin(3);
+    expect(await send([1, 2, 3], rid('a'))).toMatchObject({ status: 'rejected', reason: 'conflict' });
+    expect(fake.sends).toHaveLength(1);
+  });
+
+  it('a maybe-sent comment with no stored hash (written before this fix) fails closed on a same-id retry', async () => {
+    await timedOutThenReload(1);
+    await rewriteComments(file => { delete file.comments[0].send.lastBatchPromptSha; });
+    expect(await send([1], rid('a'))).toMatchObject({ status: 'rejected', reason: 'conflict' });
+    expect(fake.sends).toHaveLength(1);
+  });
+
+  it('reload at 25 different moments inside one send, then the identical retry: the host never receives more than one message per comment', async () => {
+    await pins(25);
+    for (let k = 1; k <= 25; k++) {
+      const before = fake.sends.length;
+      const call = send([k], rid2(k));
+      for (let i = 0; i < k; i++) await new Promise(resolve => setImmediate(resolve));
+      controller.dispose(); coordinator.dispose();
+      await call;
+      await settle();
+      useStack();
+      const retry = await send([k], rid2(k));
+      await settle();
+      expect(fake.sends.length - before, `k=${k} retry=${retry.status}`).toBeLessThanOrEqual(1);
+      const state = await byId(k);
+      expect(state.status, `k=${k}`).not.toBe('pending');
+      if (fake.sends.length - before === 1) expect(['sent', 'open'], `k=${k}`).toContain(state.status);
+      if (state.status === 'sent') expect(fake.sends.length - before, `k=${k}`).toBe(1);
+    }
+  }, 120_000);
+
+  it('a different request id after a reload mid-send is the user choosing a second message: it goes out and clears the flag', async () => {
+    await timedOutThenReload();
+    expect(ok<any>(await send([1, 2], rid('z'))).outcome).toBe('sent');
+    expect(fake.sends).toHaveLength(2);
+    expect(await byId(1)).toMatchObject({ status: 'sent', send: { maybeSent: false } });
+  });
+});
+
+describe('final fix: the cancelled tombstone window restarts at the cancel', () => {
+  it('queued 11 minutes, cancelled, retried at once: conflict, no send', async () => {
+    await pins(1);
+    running(true);
+    ok(await send([1], rid('a')));
+    nowMs = START_MS + 11 * 60 * 1000;
+    ok(await unqueue(1));
+    running(false);
+    expect(await send([1], rid('a'))).toMatchObject({ status: 'rejected', reason: 'conflict' });
+    expect(fake.sends).toHaveLength(0);
+  });
+
+  it('the window is exactly 10 minutes from the cancel: still a conflict at +10:00.000, forgotten at +10:00.001', async () => {
+    await pins(1);
+    running(true);
+    ok(await send([1], rid('a')));
+    const cancelAt = START_MS + 5 * 60 * 1000;
+    nowMs = cancelAt;
+    ok(await unqueue(1));
+    running(false);
+    nowMs = cancelAt + 10 * 60 * 1000;
+    expect(await send([1], rid('a'))).toMatchObject({ status: 'rejected', reason: 'conflict' });
+    nowMs = cancelAt + 10 * 60 * 1000 + 1;
+    expect(ok<any>(await send([1], rid('a'))).outcome).toBe('sent');
   });
 });

@@ -72,6 +72,25 @@ const NEW = [
 ];
 mutants.push(...NEW);
 
+const FINAL = [
+  { id: 'Q01 coordinator: a timeout is not flagged maybe-sent', file: COORD, from: "resolve(uncertain('failed', MESSAGES.timedOut))", to: "resolve(rejected('failed', MESSAGES.timedOut))" },
+  { id: 'Q02 coordinator: reload mid-send not flagged maybe-sent', file: COORD, from: "issued.value ? uncertain('unavailable', MESSAGES.statusUnknown)", to: "issued.value ? rejected('unavailable', MESSAGES.statusUnknown)" },
+  { id: 'Q03 provider: maybeSent not passed to the store', file: PROVIDER, from: 'outcome.maybeSent === true);', to: 'false);' },
+  { id: 'Q04 provider: prompt hash comparison removed', file: PROVIDER, from: 'mark.promptSha !== promptSha) return fail', to: 'false) return fail' },
+  { id: 'Q05 provider: conflict for any request id, not only the same one', file: PROVIDER, from: 'mark?.requestId === requestId && mark.promptSha', to: 'true && mark?.promptSha' },
+  { id: 'Q06 provider: prompt hash not stored', file: PROVIDER, from: 'requestId, promptSha, expectedVersion', to: 'requestId, expectedVersion' },
+  { id: 'Q07 store: batch secret unstable (random per call)', file: 'src/commentStore.ts', from: ".update('threads-design/batch-boundary/v1')", to: ".update(randomBytes(8).toString('hex'))" },
+  { id: 'Q08 store: batch secret is the raw install key', file: 'src/commentStore.ts', from: "return createHmac('sha256', await this.ensureKey()).update('threads-design/batch-boundary/v1').digest('hex');", to: "return Buffer.from(await this.ensureKey()).toString('hex');" },
+  { id: 'Q09 provider: tombstone window not restarted at the cancel', file: PROVIDER, from: "{ entry.plan = null; entry.at = now(); }", to: '{ entry.plan = null; }' },
+  { id: 'Q10 prompt: no URL defusing after an escape', file: PROMPT, from: String.raw`(?:\b|(?<=\\u[0-9a-f]{4})|(?<=\\u\{[0-9a-f]+\}))`, to: String.raw`\b` },
+  { id: 'Q11 store: prompt hash not validated in transitions', file: 'src/commentStore.ts', from: "if (item.promptSha !== undefined && !isPromptSha(item.promptSha)) return rejected('invalid', 'Those changes are not valid.');", to: '' },
+  { id: 'Q12 model: send-failed maybeSent not sticky', file: 'src/commentModel.ts', from: 'maybeSent: ctx.maybeSent === true ? true : send.maybeSent', to: 'maybeSent: ctx.maybeSent === true' },
+  { id: 'Q13 provider: uncertain-retry branch removed', file: PROVIDER, from: 'if (uncertain.length > 0) {', to: 'if (false) {' },
+  { id: 'Q14 model: hostile stored prompt hash accepted', file: 'src/commentModel.ts', from: '...(isPromptSha(promptSha) ? { lastBatchPromptSha: promptSha } : {}),', to: '...(promptSha !== undefined ? { lastBatchPromptSha: promptSha as string } : {}),' },
+  { id: 'Q15 model: prompt hash not recorded by the write-ahead event', file: 'src/commentModel.ts', from: '...(isPromptSha(ctx.promptSha) ? { lastBatchPromptSha: ctx.promptSha } : {}) };', to: '};' },
+];
+mutants.push(...FINAL);
+
 const FILES = ['test/batch-prompt.test.ts', 'test/batch-send.test.ts', 'test/send-coordinator-cancel.test.ts', 'test/send-coordinator.test.ts', 'test/element-prompt.test.ts', 'test/element-feedback-registration.test.ts', 'test/p2b-qa-prompt.test.ts', 'test/p2b-qa-send.test.ts', 'test/p2b-qa-coordinator.test.ts'];
 
 function runTests() {
