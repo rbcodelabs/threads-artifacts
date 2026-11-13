@@ -1714,7 +1714,7 @@ describe('final fix: the retry rule after a reload (identical prompt dedupes, an
 
   it('a different request id after a reload mid-send is the user choosing a second message: it goes out and clears the flag', async () => {
     await timedOutThenReload();
-    expect(ok<any>(await send([1, 2], rid('z'))).outcome).toBe('sent');
+    expect(ok<any>(await send([1, 2], rid('d'))).outcome).toBe('sent');
     expect(fake.sends).toHaveLength(2);
     expect(await byId(1)).toMatchObject({ status: 'sent', send: { maybeSent: false } });
   });
