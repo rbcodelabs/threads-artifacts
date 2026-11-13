@@ -1,7 +1,7 @@
 {
   "id": "threads-artifacts",
   "name": "Artifacts for Agent Threads",
-  "version": "0.8.2",
+  "version": "0.9.0",
   "minAppVersion": "1.7.2",
   "description": "Create and revise static UI artifacts through Agent Threads.",
   "author": "Rick Bowman",
