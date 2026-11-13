@@ -1300,7 +1300,7 @@ describe('fix pass: the store keeps rejecting after the message went out', () =>
     expect(fake.sends).toHaveLength(1);
   });
 
-  it('EVERY write refused, then a restart: pending members are recovered as open + maybeSent and the request id is a conflict', async () => {
+  it('EVERY write refused, then a restart: pending members are recovered as open + maybeSent, and the same request id rebuilds the identical prompt so the host dedupes it (one message in total)', async () => {
     controller.dispose(); coordinator.dispose();
     useStack({ hooks: { transition: (_i, _r, call) => (call > 1 ? Promise.resolve(rejectedWrite) : undefined) } });
     await pins(1);
@@ -1308,7 +1308,7 @@ describe('fix pass: the store keeps rejecting after the message went out', () =>
     controller.dispose(); coordinator.dispose();
     useStack({ boundarySecret: 'S9' });
     expect(await byId(1)).toMatchObject({ status: 'open', send: { maybeSent: true } });
-    expect(await send([1], rid('a'))).toMatchObject({ status: 'rejected', reason: 'conflict' });
+    expect(ok<any>(await send([1], rid('a'))).outcome).toBe('sent');
     expect(fake.sends).toHaveLength(1);
   });
 

@@ -386,7 +386,9 @@ describe('single-send prompt is unchanged (differential against the pre-P2b buil
         maxLength: random() < 0.3 ? 2500 + Math.floor(random() * 8000) : undefined,
       };
       const run = (fn: (i: typeof common) => string): string => { try { return fn(common); } catch (error) { return `THROW:${(error as Error).constructor.name}:${(error as Error).message}`; } };
-      expect(run(buildElementPrompt as never), `round ${round}`).toBe(run(buildElementPromptOld as never));
+      // The one intended difference: a scheme glued to an escaped invisible character is now defused (advisory A3), so both sides are compared with URL defusing normalised.
+      const normalised = (text: string): string => text.replace(/(https?):\u200b\/\//gi, '$1://');
+      expect(normalised(run(buildElementPrompt as never)), `round ${round}`).toBe(normalised(run(buildElementPromptOld as never)));
     }
   });
 });
