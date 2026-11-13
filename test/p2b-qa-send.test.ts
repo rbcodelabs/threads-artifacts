@@ -1054,3 +1054,375 @@ describe('mutation sentinels (kept so a revert of the behavior fails here too)',
     for (const n of [1, 2, 3]) expect((await byId(n)).status).toBe('sent');
   });
 });
+
+
+// =============================================================================================
+// Fix-pass re-verification (D1-D10 as fixed in ca43ca2)
+// =============================================================================================
+
+const rejectedWrite = { status: 'rejected', reason: 'failed', message: 'disk full' };
+const heldCoordApi = (which: 'get' | 'permissions') => {
+  const real = (fake.api.threads as any)[which].bind(fake.api.threads);
+  const gate = { hold: false, release: () => undefined as void, promise: Promise.resolve() };
+  gate.promise = new Promise<void>(resolve => { gate.release = resolve; });
+  const coordApi = { ...fake.api, threads: { ...fake.api.threads, [which]: async (id: string) => { if (gate.hold) await gate.promise; return real(id); } } };
+  return { coordApi, gate };
+};
+
+describe('fix pass: abandoned runs (timeout at every await of the coordinator)', () => {
+  it('a hung threads.permissions that outlives the timeout: nothing is sent late, no slot, comment open/failed', async () => {
+    const { coordApi, gate } = heldCoordApi('permissions');
+    controller.dispose(); coordinator.dispose();
+    useStack({ coordApi });
+    await pins(2);
+    gate.hold = true;
+    const first = send([1], rid('a'));
+    await waitPending(1);
+    await clock.advance(ATTEMPT_TIMEOUT_MS + 10);
+    expect(await first).toMatchObject({ status: 'rejected', reason: 'failed' });
+    gate.hold = false; gate.release();
+    await settle();
+    expect(fake.sends).toHaveLength(0);
+    expect(coordinator.pendingCount).toBe(0);
+    expect(await byId(1)).toMatchObject({ status: 'open', send: { lastOutcome: 'failed' } });
+    expect(ok<any>(await send([2], rid('b'))).outcome, 'the artifact is not blocked').toBe('sent');
+  });
+
+  it('a send that outlives the timeout and then answers THREAD_BUSY does not turn into a held slot', async () => {
+    await pins(1);
+    const release = gateSends();
+    fake.sendErrors.push(new FakeApiError('THREAD_BUSY'));
+    const first = send([1], rid('a'));
+    await waitPending(1);
+    await clock.advance(ATTEMPT_TIMEOUT_MS + 10);
+    expect(await first).toMatchObject({ status: 'rejected', reason: 'failed' });
+    release();
+    await settle();
+    expect(coordinator.pendingCount).toBe(0);
+    expect(fake.sends).toHaveLength(0);
+    running(false);
+    await clock.advance(POLL_MS * 3);
+    expect(fake.sends, 'an abandoned run must never send later').toHaveLength(0);
+  });
+
+  it('a hung threads.get while the thread is busy: after release no hold, and a later run end sends nothing', async () => {
+    const { coordApi, gate } = heldCoordApi('get');
+    controller.dispose(); coordinator.dispose();
+    useStack({ coordApi });
+    await pins(1);
+    running(true);
+    gate.hold = true;
+    const first = send([1], rid('a'));
+    await waitPending(1);
+    await clock.advance(ATTEMPT_TIMEOUT_MS + 10);
+    await first;
+    gate.hold = false; gate.release();
+    await settle();
+    await finishRun();
+    expect(fake.sends).toHaveLength(0);
+    expect(coordinator.pendingCount).toBe(0);
+    expect(await byId(1)).toMatchObject({ status: 'open' });
+  });
+
+  it('timeout while threads.send is in flight: the caller is told it may have been received, the same request id retries safely in this process, and a NEW request id is the user\'s explicit second message', async () => {
+    await pins(1);
+    const release = gateSends();
+    const first = send([1], rid('a'));
+    await waitPending(1);
+    await clock.advance(ATTEMPT_TIMEOUT_MS + 10);
+    expect(await first).toMatchObject({ status: 'rejected', reason: 'failed', message: expect.stringMatching(/may have been received|check the thread/i) });
+    release();
+    await settle();
+    expect(fake.sends).toHaveLength(1);
+    ok(await send([1], rid('a')));
+    expect(fake.sends, 'same request id: host dedupes').toHaveLength(1);
+  });
+
+  it.fails('ADVISORY: timeout (message may have arrived), then a reload, then the same request id: must not send a second message', async () => {
+    useStack({ boundarySecret: 'S1' });
+    await pins(1);
+    const release = gateSends();
+    const first = send([1], rid('a'));
+    await waitPending(1);
+    await clock.advance(ATTEMPT_TIMEOUT_MS + 10);
+    await first;
+    release();
+    await settle();
+    expect(fake.sends).toHaveLength(1);
+    controller.dispose(); coordinator.dispose();
+    useStack({ boundarySecret: 'S2' });
+    await send([1], rid('a'));
+    expect(fake.sends).toHaveLength(1);
+  });
+});
+const POLL_MS = 5000;
+
+describe('fix pass: retry after a reload is a conflict, not a dead end', () => {
+  async function crashed() {
+    useStack({ boundarySecret: 'S1' });
+    await pins(2);
+    const release = gateSends();
+    const old = send([1, 2], rid('a'));
+    await waitPending(1);
+    controller.dispose(); coordinator.dispose();
+    release();
+    await old;
+    await settle();
+    useStack({ boundarySecret: 'S2' });
+  }
+
+  it('the conflict writes nothing, sends nothing, names the reason, is stable on repeat, and does not poison the ledger', async () => {
+    await crashed();
+    const bytes = await fs.readFile(commentsFile(), 'utf8');
+    for (let i = 0; i < 3; i++) expect(await send([1, 2], rid('a'))).toMatchObject({ status: 'rejected', reason: 'conflict', message: expect.stringMatching(/may already be in the thread/) });
+    expect(await fs.readFile(commentsFile(), 'utf8')).toBe(bytes);
+    expect(fake.sends).toHaveLength(1);
+  });
+
+  it('any one maybe-sent comment of the request makes the whole retry a conflict, a subset too, but a NEW request id sends all of them', async () => {
+    await crashed();
+    await pin(3);
+    expect(await send([1, 3], rid('a'))).toMatchObject({ status: 'rejected', reason: 'conflict' });
+    expect(await send([2], rid('a'))).toMatchObject({ status: 'rejected', reason: 'conflict' });
+    expect(fake.sends).toHaveLength(1);
+    expect(ok<any>(await send([1, 2, 3], rid('b'))).outcome).toBe('sent');
+    expect(fake.sends).toHaveLength(2);
+    for (const n of [1, 2, 3]) expect(await byId(n)).toMatchObject({ status: 'sent', send: { maybeSent: false } });
+  });
+
+  it('the user is never stuck: editing, resolving, dismissing and reopening a maybe-sent comment all work, and so does a new request', async () => {
+    await crashed();
+    const c = await byId(1);
+    ok(await provider.update(target, { id: cmtId(1), expectedVersion: c.version, change: { text: 'Edited after the restart' } }, ctx()));
+    expect(await send([1], rid('a'))).toMatchObject({ status: 'rejected', reason: 'conflict' });
+    const c2 = await byId(2);
+    ok(await provider.update(target, { id: cmtId(2), expectedVersion: c2.version, change: { action: 'dismiss' } }, ctx()));
+    const c2b = await byId(2);
+    ok(await provider.update(target, { id: cmtId(2), expectedVersion: c2b.version, change: { action: 'reopen' } }, ctx()));
+    expect(ok<any>(await send([1, 2], rid('c'))).outcome).toBe('sent');
+  });
+
+  it('a comment maybe-sent from request A does not block request B even after a SECOND reload', async () => {
+    await crashed();
+    controller.dispose(); coordinator.dispose();
+    useStack({ boundarySecret: 'S3' });
+    expect(await byId(1)).toMatchObject({ status: 'open', send: { maybeSent: true } });
+    expect(ok<any>(await send([1, 2], rid('b'))).outcome).toBe('sent');
+  });
+
+  it('a retry whose comments were recovered from a DIFFERENT earlier request is not a conflict', async () => {
+    await crashed();
+    expect(ok<any>(await send([1, 2], rid('d'))).outcome).toBe('sent');
+    await provider.update(target, { id: cmtId(1), expectedVersion: (await byId(1)).version, change: { action: 'reopen' } }, ctx());
+    expect(ok<any>(await send([1], rid('e'))).outcome, 'reopened + sent before: not maybe-sent').toBe('sent');
+  });
+});
+
+describe('fix pass: the store keeps rejecting after the message went out', () => {
+  const afterFirst = (events: string[], mode: 'reject' | 'throw' = 'reject') => (items: readonly any[], _real: any, call: number) => {
+    if (call === 1 || !events.includes(items[0]?.event)) return undefined;
+    return mode === 'reject' ? Promise.resolve(rejectedWrite) : Promise.reject(new Error('EIO'));
+  };
+
+  it('delivered always refused, reload-recovered works: comments end open + maybeSent, the report says so, and a retry of the same request is a conflict (no second message)', async () => {
+    controller.dispose(); coordinator.dispose();
+    useStack({ hooks: { transition: afterFirst(['delivered']) } });
+    await pins(2);
+    const result = ok<any>(await send([1, 2], rid('a')));
+    expect(fake.sends).toHaveLength(1);
+    expect(result.message).toMatch(/could not be saved/);
+    for (const n of [1, 2]) expect(await byId(n)).toMatchObject({ status: 'open', send: { maybeSent: true } });
+    expect(await send([1, 2], rid('a'))).toMatchObject({ status: 'rejected' });
+    expect(fake.sends).toHaveLength(1);
+  });
+
+  it('the same with a thrown error instead of a rejection', async () => {
+    controller.dispose(); coordinator.dispose();
+    useStack({ hooks: { transition: afterFirst(['delivered'], 'throw') } });
+    await pins(1);
+    ok(await send([1], rid('a')));
+    expect(await byId(1)).toMatchObject({ status: 'open', send: { maybeSent: true } });
+  });
+
+  it('one transient refusal is retried once and the outcome is a clean sent', async () => {
+    controller.dispose(); coordinator.dispose();
+    let refused = false;
+    useStack({ hooks: { transition: (items, _r, call) => (call > 1 && !refused && items[0]?.event === 'delivered' ? ((refused = true), Promise.resolve(rejectedWrite)) : undefined) } });
+    await pins(2);
+    const result = ok<any>(await send([1, 2], rid('a')));
+    expect(result.message).not.toMatch(/could not be saved/);
+    for (const n of [1, 2]) expect(await byId(n)).toMatchObject({ status: 'sent', send: { maybeSent: false } });
+  });
+
+  it('EVERY write after the write-ahead refused: members stay pending, nothing throws, healing the disk lets the user take them back, and no second message exists', async () => {
+    controller.dispose(); coordinator.dispose();
+    let healed = false;
+    useStack({ hooks: { transition: (items, _r, call) => (call > 1 && !healed ? Promise.resolve(rejectedWrite) : undefined), update: () => (healed ? undefined : Promise.resolve(rejectedWrite)) } });
+    await pins(2);
+    const result = ok<any>(await send([1, 2], rid('a')));
+    expect(result.outcome).toBe('sent');
+    expect(result.message).toMatch(/could not be saved/);
+    healed = true;
+    expect((await byId(1)).status).toBe('pending');
+    ok(await unqueue(1));
+    expect((await byId(1)).status).toBe('open');
+    expect(fake.sends).toHaveLength(1);
+  });
+
+  it('EVERY write refused, then a restart: pending members are recovered as open + maybeSent and the request id is a conflict', async () => {
+    controller.dispose(); coordinator.dispose();
+    useStack({ hooks: { transition: (_i, _r, call) => (call > 1 ? Promise.resolve(rejectedWrite) : undefined) } });
+    await pins(1);
+    ok(await send([1], rid('a')));
+    controller.dispose(); coordinator.dispose();
+    useStack({ boundarySecret: 'S9' });
+    expect(await byId(1)).toMatchObject({ status: 'open', send: { maybeSent: true } });
+    expect(await send([1], rid('a'))).toMatchObject({ status: 'rejected', reason: 'conflict' });
+    expect(fake.sends).toHaveLength(1);
+  });
+
+  it('send-failed always refused, expired works: comment is open + failed (not maybeSent) and can be re-sent with the same request id', async () => {
+    controller.dispose(); coordinator.dispose();
+    useStack({ hooks: { transition: afterFirst(['send-failed']) } });
+    await pins(1);
+    fake.sendErrors.push(new FakeApiError('INVALID_ARGUMENT'));
+    expect(await send([1], rid('a'))).toMatchObject({ status: 'rejected' });
+    expect(await byId(1)).toMatchObject({ status: 'open', send: { lastOutcome: 'failed', maybeSent: false } });
+    expect(ok<any>(await send([1], rid('a'))).outcome).toBe('sent');
+  });
+
+  it('cancel with every unqueue update refused: members are released through expired, open, not maybeSent, none left pending', async () => {
+    controller.dispose(); coordinator.dispose();
+    useStack({ hooks: { update: input => (input.change?.action === 'unqueue' ? Promise.resolve(rejectedWrite) : undefined) } });
+    await pins(3);
+    running(true);
+    ok(await send([1, 2, 3]));
+    await unqueue(1);
+    await settle();
+    for (const n of [1, 2, 3]) expect(await byId(n), `member ${n}`).toMatchObject({ status: 'open', send: { maybeSent: false } });
+    expect(fake.sends).toHaveLength(0);
+  });
+
+  it('a member resolved behind the queue keeps its status; the others are delivered; the changed member is not touched by the fallback', async () => {
+    await pins(3);
+    running(true);
+    ok(await send([1, 2, 3], rid('a')));
+    await rewriteComments(file => { file.comments.find((x: any) => x.id === cmtId(2)).status = 'resolved'; });
+    await finishRun();
+    expect((await byId(1)).status).toBe('sent');
+    expect((await byId(3)).status).toBe('sent');
+    expect((await byId(2)).status).toBe('resolved');
+  });
+});
+
+describe('fix pass: cancelled tombstone', () => {
+  it('within the window a retry of a cancelled request is a conflict and sends nothing; a new request id works', async () => {
+    await pins(2);
+    running(true);
+    ok(await send([1, 2], rid('a')));
+    ok(await unqueue(1));
+    running(false);
+    expect(await send([1, 2], rid('a'))).toMatchObject({ status: 'rejected', reason: 'conflict', message: expect.stringMatching(/cancelled/i) });
+    expect(fake.sends).toHaveLength(0);
+    expect(ok<any>(await send([1, 2], rid('b'))).outcome).toBe('sent');
+  });
+
+  it.fails('BUG: a batch queued for more than 10 minutes and then cancelled loses its tombstone at once (the window runs from creation), so a late retry revives it', async () => {
+    await pins(1);
+    running(true);
+    ok(await send([1], rid('a')));
+    nowMs = START_MS + 11 * 60 * 1000;
+    ok(await unqueue(1));
+    running(false);
+    await send([1], rid('a'));
+    expect(fake.sends, 'cancelled request sent again').toHaveLength(0);
+  });
+});
+
+describe('fix pass: expectedVersion and plan keys', () => {
+  it('an external version bump (comments.json rewritten) between snapshot and write-ahead is a skipped conflict for the whole batch: no message, nothing pending', async () => {
+    controller.dispose(); coordinator.dispose();
+    let armed = false;
+    let done = false;
+    useStack({ hooks: { afterSnapshot: async () => { if (!armed || done) return; done = true; await rewriteComments(file => { file.comments.find((x: any) => x.id === cmtId(2)).version += 1; }); } } });
+    await pins(3);
+    armed = true;
+    const report = ok<any>(await send([1, 2, 3], rid('a')));
+    armed = false;
+    expect(report.outcome).toBe('none');
+    expect(fake.sends).toHaveLength(0);
+    for (const n of [1, 2, 3]) expect((await byId(n)).status).toBe('open');
+    expect(ok<any>(await send([1, 2, 3], rid('a'))).outcome, 'the same request id is usable again after a conflict').toBe('sent');
+  });
+
+  it('an edit between snapshot and write-ahead: nothing sent, and the retry sends the edited text', async () => {
+    controller.dispose(); coordinator.dispose();
+    let armed = false;
+    let edited = false;
+    useStack({ hooks: { afterSnapshot: async (real, snap) => { if (!armed || edited || snap.comments.length === 0) return; edited = true; const c = snap.comments[0]; ok(await real.update({ id: c.id, expectedVersion: c.version, change: { text: 'EDITED-RACE' } })); } } });
+    await pins(1);
+    armed = true;
+    const report = ok<any>(await send([1], rid('a')));
+    armed = false;
+    expect(report.outcome).toBe('none');
+    expect(fake.sends).toHaveLength(0);
+    ok(await send([1], rid('a')));
+    expect(promptsOf()[0]).toContain('EDITED-RACE');
+  });
+
+  it('plan key includes the text: edit between two attempts of one request id changes the prompt, and reverting the text gives the original prompt back', async () => {
+    const attempted: string[] = [];
+    const original = fake.api.threads.send.bind(fake.api.threads);
+    (fake.api.threads as any).send = async (id: string, input: any) => { attempted.push(input.prompt); return original(id, input); };
+    await pins(1);
+    const edit = async (text: string) => { const c = await byId(1); ok(await provider.update(target, { id: cmtId(1), expectedVersion: c.version, change: { text } }, ctx())); };
+    fake.sendErrors.push(new FakeApiError('RUN_FAILED'));
+    await send([1], rid('a'));
+    await edit('Second wording');
+    fake.sendErrors.push(new FakeApiError('RUN_FAILED'));
+    await send([1], rid('a'));
+    await edit('Comment 1');
+    ok(await send([1], rid('a')));
+    expect(attempted).toHaveLength(3);
+    expect(attempted[1]).toContain('Second wording');
+    expect(attempted[1]).not.toBe(attempted[0]);
+    expect(attempted[2]).toBe(attempted[0]);
+  });
+});
+
+describe('fix pass: vault-read blanking and unfenced lines', () => {
+  const VAULT = 'VAULTMARK';
+  const secret = { textAnchor: { tag: 'h1', text: `${VAULT}-ANCHOR` }, landmark: `${VAULT}-LANDMARK`, a11y: { role: 'heading', name: `${VAULT}-NAME`, tabIndex: null }, outerHTML: { html: `<h1>${VAULT}-HTML</h1>`, truncated: false } };
+
+  it('a pre-grant pin on a manifest-vault-read artifact: no anchor text, landmark, label text, html or name; structure (route, selector, tag) and the typed comment survive', async () => {
+    await pin(1, { comment: 'Please make this bigger' }, secret);
+    await fs.writeFile(path.join(root, 'artifact.json'), JSON.stringify({ ...buildDesignManifest('t1', 'Landing'), permissions: { network: 'none', clipboard: false, vault: 'read' } }));
+    ok(await send([1], rid('a')));
+    const prompt = fake.sends[0].prompt;
+    expect(prompt).not.toContain(VAULT);
+    expect(prompt).toContain('selector: ');
+    expect(prompt).toContain('Please make this bigger');
+    expect(prompt).toContain('pin label: "h1"');
+  });
+
+  it('the same when only the host target says vaultRead (manifest unchanged), and when the sidecar is gone', async () => {
+    await pin(1, {}, secret);
+    await fs.rm(path.join(root, '.threads-design', 'selections', `${selId(1)}.json`), { force: true });
+    ok(await send([1], rid('a'), {}, { ...target, vaultRead: true }));
+    expect(fake.sends[0].prompt).not.toContain(VAULT);
+  });
+
+  it('a normal (non vault-read) pin still carries its anchor text and label (the blanking is not applied elsewhere)', async () => {
+    await pin(1, {}, secret);
+    ok(await send([1], rid('a')));
+    expect(fake.sends[0].prompt).toContain(`${VAULT}-ANCHOR`);
+  });
+
+  it('the artifact folder is named once per data block inside the fence; file lines are relative and fixed-shape', async () => {
+    await pins(2);
+    ok(await send([1, 2]));
+    const prompt = fake.sends[0].prompt;
+    expect((prompt.match(/^artifact folder: /gm) ?? []).length).toBe(2);
+    expect(prompt).toContain(`Full payload: ".threads-design/selections/${selId(1)}.json"`);
+  });
+});
