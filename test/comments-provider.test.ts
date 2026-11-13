@@ -88,7 +88,7 @@ describe('provider surface', () => {
     expect(fsSync.existsSync(commentsFile())).toBe(false);
   });
 
-  it('sendBatch is not available until P2b and says so without touching comments', async () => {
+  it('sendBatch is unavailable when the provider was built without a send coordinator, and touches nothing', async () => {
     const result = await provider.sendBatch(target, { requestId: `req_${'a'.repeat(32)}`, ids: [CMT], resend: false, anchorStates: {} }, ctx());
     expect(result).toMatchObject({ status: 'rejected', reason: 'unavailable' });
     expect(fsSync.existsSync(commentsFile())).toBe(false);
