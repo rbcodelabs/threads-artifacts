@@ -14,7 +14,7 @@ const REQUIRED_CAPABILITIES = [
 
 type Disposable = { dispose(): void };
 
-export default class ThreadsDesignPlugin extends Plugin {
+export default class ThreadsArtifactsPlugin extends Plugin {
   private registrations: Disposable[] = [];
   private service: DesignService | null = null;
 
@@ -40,12 +40,12 @@ export default class ThreadsDesignPlugin extends Plugin {
     await this.disconnect();
     const api = this.getApi();
     if (!api || api.apiVersion !== 1) {
-      new Notice('Design for Agent Threads requires Agent Threads with public API v1.');
+      new Notice('Artifacts for Agent Threads requires Agent Threads with public API v1.');
       return;
     }
     const missing = REQUIRED_CAPABILITIES.filter(capability => !api.capabilities.includes(capability));
     if (missing.length > 0) {
-      new Notice(`Design for Agent Threads needs a newer Agent Threads version (${missing.join(', ')}).`);
+      new Notice(`Artifacts for Agent Threads needs a newer Agent Threads version (${missing.join(', ')}).`);
       return;
     }
 

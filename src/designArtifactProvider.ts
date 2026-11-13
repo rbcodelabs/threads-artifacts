@@ -28,8 +28,8 @@ export const DESIGN_ARTIFACT_SCHEMA_VERSION = 1 as const;
 
 /** The plugin's own identity when it registers built-in capabilities. */
 export const DESIGN_PROVIDER_OWNER = Object.freeze({
-  pluginId: 'threads-design',
-  displayName: 'Design for Agent Threads',
+  pluginId: 'threads-artifacts',
+  displayName: 'Artifacts for Agent Threads',
 });
 
 export const DESIGN_ACTION_PREVIEW = 'preview';

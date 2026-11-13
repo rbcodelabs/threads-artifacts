@@ -1,8 +1,8 @@
 {
-  "name": "threads-design",
+  "name": "threads-artifacts",
   "version": "0.1.0",
   "private": true,
-  "description": "Static UI design artifacts for Agent Threads",
+  "description": "Artifacts for Agent Threads, starting with static UI designs",
   "main": "main.js",
   "scripts": {
     "build": "node esbuild.config.mjs",

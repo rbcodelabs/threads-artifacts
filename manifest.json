@@ -1,9 +1,9 @@
 {
-  "id": "threads-design",
-  "name": "Design for Agent Threads",
+  "id": "threads-artifacts",
+  "name": "Artifacts for Agent Threads",
   "version": "0.1.0",
   "minAppVersion": "1.7.2",
-  "description": "Create and revise static UI artifacts through Agent Threads.",
+  "description": "Create and revise artifacts (starting with static UI designs) through Agent Threads.",
   "author": "Rick Bowman",
   "authorUrl": "https://github.com/rbcodelabs",
   "isDesktopOnly": true
