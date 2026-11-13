@@ -50,7 +50,12 @@ type Rejected = Extract<SendOutcome, { status: 'rejected' }>;
 /** A queued message ended without `submit` knowing: it was sent, failed, or the caller cancelled it (`cancel`). */
 export type DeferredOutcome = SendOutcome | { readonly status: 'cancelled' };
 
-export interface DeferredSendResult { readonly selectionId: string; readonly outcome: DeferredOutcome }
+export interface DeferredSendResult {
+  readonly selectionId: string;
+  /** The artifact the held message belonged to: a result is only meaningful for that artifact. */
+  readonly artifactKey: string;
+  readonly outcome: DeferredOutcome;
+}
 
 export interface SendRequest {
   readonly selectionId: string;
@@ -223,7 +228,7 @@ export function createSendCoordinator(options: SendCoordinatorOptions): SendCoor
     if (slot.settleTimer !== null) { clock.clearTimeout(slot.settleTimer); slot.settleTimer = null; }
     if (slot.ttlTimer !== null) { clock.clearTimeout(slot.ttlTimer); slot.ttlTimer = null; }
     slots.delete(slot.artifactKey);
-    notifyDeferred({ selectionId: slot.selectionId, outcome });
+    notifyDeferred({ selectionId: slot.selectionId, artifactKey: slot.artifactKey, outcome });
     stopWatchingIfIdle();
   }
 
@@ -257,7 +262,11 @@ export function createSendCoordinator(options: SendCoordinatorOptions): SendCoor
     return { status: 'queued' };
   }
 
-  async function run(request: SendRequest, issued: { value: boolean }): Promise<SendOutcome> {
+  /**
+   * `abandoned` is set when the caller was already told the attempt timed out. From then on this run must not create
+   * a held slot or issue a send: a slot nobody tracks would block the artifact and send later with no one recording it.
+   */
+  async function run(request: SendRequest, issued: { value: boolean }, abandoned: { value: boolean }): Promise<SendOutcome> {
     try {
       let state: ThreadState;
       try {
@@ -265,21 +274,23 @@ export function createSendCoordinator(options: SendCoordinatorOptions): SendCoor
       } catch {
         return rejected('unavailable', MESSAGES.unavailable);
       }
+      if (abandoned.value) return rejected('failed', MESSAGES.timedOut);
       if (disposed) return rejected('unavailable', MESSAGES.disposed);
       if (state === 'missing') return rejected('unavailable', MESSAGES.gone);
       if (state === 'busy') return hold(request);
       const outcome = await attempt(request, issued);
       // Contract item 9: once the send was issued it may have reached the host, so do not claim it failed.
       if (disposed) return rejected('unavailable', issued.value ? MESSAGES.statusUnknown : MESSAGES.disposed);
+      if (outcome === BUSY && abandoned.value) return rejected('failed', MESSAGES.timedOut);
       return outcome === BUSY ? hold(request) : outcome;
     } catch (error) {
       return mapSendError(error);
     }
   }
 
-  function withTimeout(promise: Promise<SendOutcome>): Promise<SendOutcome> {
+  function withTimeout(promise: Promise<SendOutcome>, abandoned: { value: boolean }): Promise<SendOutcome> {
     return new Promise(resolve => {
-      const timer = clock.setTimeout(() => resolve(rejected('failed', MESSAGES.timedOut)), attemptTimeoutMs);
+      const timer = clock.setTimeout(() => { abandoned.value = true; resolve(rejected('failed', MESSAGES.timedOut)); }, attemptTimeoutMs);
       promise.then(outcome => { clock.clearTimeout(timer); resolve(outcome); }, error => { clock.clearTimeout(timer); resolve(mapSendError(error)); });
     });
   }
@@ -291,7 +302,8 @@ export function createSendCoordinator(options: SendCoordinatorOptions): SendCoor
     const running = inFlight.get(request.artifactKey);
     if (running) return running.selectionId === request.selectionId ? running.promise : Promise.resolve(rejected('busy', BUSY_MESSAGE));
     const entry = { selectionId: request.selectionId, promise: undefined as unknown as Promise<SendOutcome> };
-    entry.promise = withTimeout(run(request, { value: false })).finally(() => {
+    const abandoned = { value: false };
+    entry.promise = withTimeout(run(request, { value: false }, abandoned), abandoned).finally(() => {
       if (inFlight.get(request.artifactKey) === entry) inFlight.delete(request.artifactKey);
     });
     inFlight.set(request.artifactKey, entry);
@@ -331,7 +343,7 @@ export function createSendCoordinator(options: SendCoordinatorOptions): SendCoor
       if (pollTimer !== null) { clock.clearTimeout(pollTimer); pollTimer = null; }
       if (subscription) { subscription.dispose(); subscription = null; }
       // The user was told "Queued"; make the loss visible instead of silent.
-      for (const slot of dropped) notifyDeferred({ selectionId: slot.selectionId, outcome: rejected('unavailable', MESSAGES.droppedOnDispose) });
+      for (const slot of dropped) notifyDeferred({ selectionId: slot.selectionId, artifactKey: slot.artifactKey, outcome: rejected('unavailable', MESSAGES.droppedOnDispose) });
     },
   };
 }

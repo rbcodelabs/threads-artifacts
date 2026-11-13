@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import type { AgentThreadsApiV1 } from './contracts';
@@ -24,7 +25,7 @@ import type { ArtifactFeedbackRequest, ArtifactFeedbackTarget } from './geodeArt
 import { pruneSelections, readSelectionJson, removeSelectionFiles, SELECTION_RETENTION, SIDECAR_DIR, writeSelectionFiles } from './selectionFiles';
 import { serializeSelectionRecord } from './selectionRecord';
 import { BUSY_MESSAGE, type DeferredSendResult, type SendCoordinator } from './sendCoordinator';
-import { findSourceHints } from './sourceHints';
+import { findSourceHints, loadSourceFiles } from './sourceHints';
 
 /**
  * The `comments` provider of the v2 handler (design 1.2 to 1.5, threats T5, T6, T11, T12): a thin, defensive layer
@@ -50,6 +51,10 @@ const MESSAGES = {
   sendUnavailable: 'Sending pinned comments is not available right now.',
   requestReused: 'That send request was already used for different comments. Try again.',
   sendingNow: 'This comment is being sent right now, so it cannot be taken back.',
+  cancelled: 'This send was cancelled. Choose the comments and send again.',
+  settling: 'The previous attempt is still being recorded. Try again in a moment.',
+  maybeSentRetry: 'Design restarted while this was sending, so it may already be in the thread. Send it again only if you want a second message.',
+  notRecorded: 'The message went out, but its status could not be saved, so these comments are marked as maybe sent.',
   changedWhileSending: 'These comments changed while sending, so nothing was sent. Try again.',
   promptUnsafe: 'These comments could not be made safe to send. Shorten them and try again.',
   delivered: 'Sent to the thread.',
@@ -125,7 +130,7 @@ type EntryState = 'idle' | 'sending' | 'queued' | 'done' | 'failed' | 'cancelled
 
 /** The prompt pinned for one request: a retry reuses it byte for byte, so the host idempotency key cannot change. */
 interface BatchPlan {
-  /** Ids (ordinal order) of the comments that were sendable when the prompt was built. */
+  /** Ids and text hashes (ordinal order) of the comments the prompt was built from: any edit makes the plan stale. */
   readonly sendableKey: string;
   readonly prompt: string;
   readonly includedIds: readonly string[];
@@ -149,6 +154,8 @@ interface BatchEntry {
   /** Comments inside the message while it is being sent or is queued. */
   memberIds: readonly string[];
   settling: Promise<void> | null;
+  /** True once the writes that follow a queued outcome have finished. A retry before then is asked to wait. */
+  settled: boolean;
 }
 
 const isLive = (entry: BatchEntry): boolean => entry.state === 'sending' || entry.state === 'queued';
@@ -166,12 +173,18 @@ function parseSendInput(input: unknown): ParsedSend | { readonly ok: false; read
   if (!isObject(input)) return invalid('That send request is not valid.');
   const { requestId, ids, resend, anchorStates } = input;
   if (typeof requestId !== 'string' || !ARTIFACT_COMMENTS_REQUEST_ID_PATTERN.test(requestId)) return invalid('That send request is not valid.');
+  // The length comes first: nothing below walks a list the caller made arbitrarily long.
+  if (Array.isArray(ids) && ids.length > MAX_BATCH) return { ok: false as const, result: fail('limit', `Send at most ${MAX_BATCH} comments at a time.`) };
   if (!Array.isArray(ids) || ids.length < 1 || !ids.every((id) => isCommentId(id)) || new Set(ids).size !== ids.length) return invalid('Choose between 1 and 20 different comments to send.');
-  if (ids.length > MAX_BATCH) return { ok: false as const, result: fail('limit', `Send at most ${MAX_BATCH} comments at a time.`) };
   if (typeof resend !== 'boolean') return invalid('That send request is not valid.');
+  // Only the requested ids are looked up, so the size of the caller's object does not matter.
   const states: Record<string, string> = {};
   if (isObject(anchorStates)) {
-    for (const [id, state] of Object.entries(anchorStates)) if (isCommentId(id) && typeof state === 'string' && state.length <= 32) states[id] = state;
+    for (const id of ids as string[]) {
+      if (!Object.prototype.hasOwnProperty.call(anchorStates, id)) continue;
+      const state = anchorStates[id];
+      if (typeof state === 'string' && state.length <= 32) states[id] = state;
+    }
   }
   return { ok: true, requestId, ids: ids as string[], resend, anchorStates: states };
 }
@@ -315,6 +328,56 @@ export function createArtifactCommentsProvider(deps: CommentsProviderDeps): Comm
     return null;
   }
 
+  type Transition = Parameters<CommentRootHandle['transition']>[0][number];
+  type Written = ArtifactCommentsResult<unknown>;
+  const transient = (result: Written): boolean => result.status === 'rejected' && (result.reason === 'failed' || result.reason === 'unavailable');
+
+  /** One store call that never throws: a throw is just another failed write. */
+  async function tryWrite(call: () => Promise<Written>): Promise<Written> {
+    try {
+      return await call();
+    } catch (error) {
+      warn('threads-design: a comment status write threw', error);
+      return fail('failed', MESSAGES.unexpected);
+    }
+  }
+
+  /** Tries a write, then once more when the failure may be transient (a busy or failing disk). */
+  async function writeWithRetry(call: () => Promise<Written>): Promise<Written> {
+    const first = await tryWrite(call);
+    return transient(first) ? tryWrite(call) : first;
+  }
+
+  /**
+   * Records a send result on every member. The write is atomic in the store, so when it is refused (one member changed
+   * behind our back, or the disk failed) it is redone member by member: a changed member is skipped and the others
+   * still get their status. A member whose write keeps failing is moved to `fallback` so nothing stays `pending`
+   * after the send is over. Returns true when every write that was needed worked the first way.
+   */
+  async function recordMembers(handle: CommentRootHandle, ids: readonly string[], event: Transition['event'], requestId: string, message: string, fallback: { readonly event: Transition['event']; readonly message: string } | null): Promise<boolean> {
+    const item = (id: string, which: Transition['event'], text: string): Transition => ({ id, event: which, ...(which === 'reload-recovered' ? {} : { requestId }), message: text });
+    if ((await writeWithRetry(() => handle.transition(ids.map((id) => item(id, event, message))))).status === 'ok') return true;
+    for (const id of ids) {
+      const written = await writeWithRetry(() => handle.transition([item(id, event, message)]));
+      if (written.status === 'ok') continue;
+      if (written.status === 'rejected' && (written.reason === 'invalid-transition' || written.reason === 'not-found' || written.reason === 'conflict')) continue; // changed behind the queue: not ours to touch
+      if (fallback) await writeWithRetry(() => handle.transition([item(id, fallback.event, fallback.message)]));
+    }
+    return false;
+  }
+
+  /** Puts one cancelled member back to `open`; a member whose write keeps failing is released through `expired` instead. */
+  async function releaseMember(handle: CommentRootHandle, id: string, requestId: string): Promise<void> {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const found = await tryWrite(() => handle.get(id));
+      if (found.status !== 'ok') break;
+      const value = found.value as ArtifactComment;
+      if (value.status !== 'pending') return;
+      if ((await tryWrite(() => handle.update({ id, expectedVersion: value.version, change: { action: 'unqueue' } }))).status === 'ok') return;
+    }
+    await recordMembers(handle, [id], 'expired', requestId, 'Cancelled before it was sent.', null);
+  }
+
   async function unqueueBatch(handle: CommentRootHandle, entry: BatchEntry, id: string, expectedVersion: unknown): Promise<ArtifactCommentsResult<ArtifactComment>> {
     if (entry.state !== 'queued') return fail('busy', MESSAGES.sendingNow);
     const current = await handle.get(id);
@@ -332,30 +395,22 @@ export function createArtifactCommentsProvider(deps: CommentsProviderDeps): Comm
   function settleEntry(entry: BatchEntry, outcome: Settled): Promise<void> {
     if (entry.settling) return entry.settling;
     entry.state = outcome.status === 'sent' ? 'done' : outcome.status === 'cancelled' ? 'cancelled' : 'failed';
+    // The old "queued" answer is wrong from this moment on, whatever the writes below take.
+    if (outcome.status !== 'sent') entry.report = null;
+    if (outcome.status === 'cancelled') entry.plan = null;
     entry.settling = (async () => {
       try {
         const handle = await handleFor(entry.root, entry.artifactId);
-        if (outcome.status === 'sent') {
-          await handle.transition(entry.memberIds.map((id) => ({ id, event: 'delivered' as const, requestId: entry.requestId, message: MESSAGES.delivered })));
-        } else if (outcome.status === 'rejected') {
-          await handle.transition(entry.memberIds.map((id) => ({ id, event: 'send-failed' as const, requestId: entry.requestId, message: outcome.message })));
-        } else if (outcome.status === 'cancelled') {
-          for (const id of entry.memberIds) {
-            const found = await handle.get(id);
-            if (found.status === 'ok' && found.value.status === 'pending') await handle.update({ id, expectedVersion: found.value.version, change: { action: 'unqueue' } });
-          }
-        }
+        if (outcome.status === 'sent') await recordMembers(handle, entry.memberIds, 'delivered', entry.requestId, MESSAGES.delivered, { event: 'reload-recovered', message: MESSAGES.notRecorded });
+        else if (outcome.status === 'rejected') await recordMembers(handle, entry.memberIds, 'send-failed', entry.requestId, outcome.message, { event: 'expired', message: outcome.message });
+        else if (outcome.status === 'cancelled') for (const id of entry.memberIds) await releaseMember(handle, id, entry.requestId);
       } catch (error) {
         warn('threads-design: could not record how a queued batch ended', error);
       }
       if (outcome.status === 'sent' && entry.report) {
         entry.report = buildReport(entry.requestId, entry.report.items.map((item) => (item.result === 'queued' ? { id: item.id, result: 'sent' as const } : item)));
-      } else if (outcome.status === 'cancelled') {
-        ledger.delete(entry.key);
-      } else {
-        // A failed queued send can be retried with the same request id: the pinned prompt is reused.
-        entry.report = null;
       }
+      entry.settled = true;
     })();
     return entry.settling;
   }
@@ -363,12 +418,15 @@ export function createArtifactCommentsProvider(deps: CommentsProviderDeps): Comm
   async function handleDeferredResult(result: DeferredSendResult): Promise<void> {
     if (disposed || !active || typeof result !== 'object' || result === null) return;
     for (const entry of ledger.values()) {
-      if (entry.state === 'queued' && entry.requestId === result.selectionId) {
+      // Both the request and the artifact must match: the same request id on another artifact is another send.
+      if (entry.state === 'queued' && entry.requestId === result.selectionId && entry.root === result.artifactKey) {
         await settleEntry(entry, result.outcome);
         return;
       }
     }
   }
+
+  const textHash = (text: string): string => createHash('sha256').update(text).digest('hex').slice(0, 16);
 
   async function executeBatch(handle: CommentRootHandle, intake: Extract<IntakeResult, { ok: true }>, parsed: ParsedSend, entry: BatchEntry, signal: AbortSignal | undefined): Promise<ArtifactCommentsResult<BatchSendReport>> {
     const coordinator = deps.coordinator as SendCoordinator;
@@ -391,17 +449,31 @@ export function createArtifactCommentsProvider(deps: CommentsProviderDeps): Comm
     if (sendable.length === 0) return done(report());
     sendable.sort((a, b) => a.ordinal - b.ordinal);
 
+    // After a restart the ledger is empty and the rebuilt prompt gets a new boundary token, so the host could not tell a
+    // retry of this request from a new message. A comment that may already have gone out under this very request id
+    // needs the user's decision (a new request), not a silent second send.
+    const unsure = sendable.filter((comment) => comment.status === 'open' && comment.send.maybeSent).map((comment) => comment.id);
+    if (unsure.length > 0) {
+      const marks = await handle.lastBatchRequestIds(unsure);
+      if ([...marks.values()].some((mark) => mark === requestId)) return fail('conflict', MESSAGES.maybeSentRetry);
+    }
+
     // Another request holds the one slot: say so before building or writing anything.
     if (coordinator.isBusy(intake.root, requestId)) return fail('busy', BUSY_MESSAGE);
 
-    const sendableKey = sendable.map((comment) => comment.id).join(',');
+    const sendableKey = sendable.map((comment) => `${comment.id}:${textHash(comment.text)}`).join(',');
     let plan = entry.plan !== null && entry.plan.sendableKey === sendableKey ? entry.plan : null;
     if (plan === null) {
       const escalation = deps.escalation?.() ?? { keywords: [], known: true };
       const dir = path.join(intake.root, SIDECAR_DIR, 'selections');
+      // One read of the source files serves every comment of the batch.
+      const files = await loadSourceFiles(intake.root).catch(() => []);
       const items: BatchPromptItem[] = await Promise.all(sendable.map(async (comment) => {
         const selection = await readSelection(intake.root, intake.manifest.id, comment.selectionId, comment.redacted || intake.vaultRead);
-        const hints = selection ? await findSourceHints(intake.root, selection).catch(() => []) : [];
+        const hints = selection ? await findSourceHints(intake.root, selection, { files }).catch(() => []) : [];
+        // A pin saved before the artifact gained `vault: read` keeps page text in its stored anchor: that text is not sent.
+        const hide = intake.vaultRead && !comment.redacted;
+        const anchor = hide ? { ...comment.anchor, textAnchor: { tag: comment.anchor.textAnchor.tag, text: '' }, landmark: null } : comment.anchor;
         return {
           id: comment.id,
           selectionId: comment.selectionId,
@@ -409,10 +481,10 @@ export function createArtifactCommentsProvider(deps: CommentsProviderDeps): Comm
           commentText: comment.text,
           tag: comment.anchor.tag,
           anchorState: parsed.anchorStates[comment.id] ?? 'unknown',
-          label: comment.label,
+          label: hide ? comment.anchor.tag : comment.label,
           artifactRevision: comment.artifactRevision,
           selection,
-          anchor: comment.anchor,
+          anchor,
           jsonPath: selection ? path.join(dir, `${comment.selectionId}.json`) : null,
           pngPath: comment.hasScreenshot && !comment.redacted && !intake.vaultRead ? path.join(dir, `${comment.selectionId}.png`) : null,
           hints,
@@ -420,7 +492,7 @@ export function createArtifactCommentsProvider(deps: CommentsProviderDeps): Comm
       }));
       let built;
       try {
-        built = buildBatchPrompt({ items, artifactTitle: intake.title, requestId, boundarySecret: deps.boundarySecret as string, escalationKeywords: escalation.keywords, conservativeKeywords: !escalation.known, maxLength: deps.maxPromptLength });
+        built = buildBatchPrompt({ items, artifactTitle: intake.title, requestId, boundarySecret: deps.boundarySecret as string, artifactRoot: intake.root, escalationKeywords: escalation.keywords, conservativeKeywords: !escalation.known, maxLength: deps.maxPromptLength });
       } catch (error) {
         warn('threads-design: could not build the batch prompt', error);
         return fail('failed', MESSAGES.promptUnsafe);
@@ -437,13 +509,14 @@ export function createArtifactCommentsProvider(deps: CommentsProviderDeps): Comm
     if (signal?.aborted) return fail('unavailable', MESSAGES.aborted);
 
     // Write-ahead (one store write): after this, a crash leaves `pending` comments that the next start recovers.
+    // The versions seen in the snapshot are required, so an edit that landed since then cannot be marked sent unsent.
     entry.memberIds = plan.includedIds;
     entry.state = 'sending';
-    const written = await handle.transition(plan.includedIds.map((id) => ({ id, event: known.get(id)?.status === 'sent' ? ('batch-resend' as const) : ('batch-issued' as const), requestId })));
+    const written = await handle.transition(plan.includedIds.map((id) => ({ id, event: known.get(id)?.status === 'sent' ? ('batch-resend' as const) : ('batch-issued' as const), requestId, expectedVersion: known.get(id)?.version })));
     if (written.status !== 'ok') {
       entry.state = 'failed';
       entry.memberIds = [];
-      if (written.reason === 'invalid-transition' || written.reason === 'not-found' || written.reason === 'foreign') {
+      if (written.reason === 'invalid-transition' || written.reason === 'not-found' || written.reason === 'foreign' || written.reason === 'conflict') {
         entry.plan = null;
         for (const id of plan.includedIds) results.set(id, { id, result: 'skipped', reason: 'conflict' });
         return done(report());
@@ -451,14 +524,6 @@ export function createArtifactCommentsProvider(deps: CommentsProviderDeps): Comm
       return written;
     }
     const markMembers = (result: BatchItemResult) => { for (const id of plan!.includedIds) results.set(id, { id, result }); };
-    const recordFailure = async (message: string) => {
-      entry.state = 'failed';
-      try {
-        await handle.transition(plan!.includedIds.map((id) => ({ id, event: 'send-failed' as const, requestId, message })));
-      } catch (error) {
-        warn('threads-design: could not record a failed send', error);
-      }
-    };
 
     const outcome = await coordinator.submit({ selectionId: requestId, artifactKey: intake.root, threadId: intake.threadId, prompt: plan.prompt });
     // A reload mid-send leaves the write-ahead state for the next start to recover; nothing more is written here.
@@ -466,19 +531,17 @@ export function createArtifactCommentsProvider(deps: CommentsProviderDeps): Comm
     if (outcome.status === 'sent') {
       entry.state = 'done';
       markMembers('sent');
-      try {
-        await handle.transition(plan.includedIds.map((id) => ({ id, event: 'delivered' as const, requestId, message: MESSAGES.delivered })));
-      } catch (error) {
-        warn('threads-design: the message was sent but its status could not be saved', error);
-      }
-      return done(report());
+      const recorded = await recordMembers(handle, plan.includedIds, 'delivered', requestId, MESSAGES.delivered, { event: 'reload-recovered', message: MESSAGES.notRecorded });
+      const final = report();
+      return done(recorded ? final : { ...final, message: `${final.message} ${MESSAGES.notRecorded}`.slice(0, ARTIFACT_COMMENTS_CAPS.maxMessageUnits) });
     }
     if (outcome.status === 'queued') {
       entry.state = 'queued';
       markMembers('queued');
       return done(report());
     }
-    await recordFailure(outcome.message);
+    entry.state = 'failed';
+    await recordMembers(handle, plan.includedIds, 'send-failed', requestId, outcome.message, { event: 'expired', message: outcome.message });
     return fail(outcome.reason, outcome.message);
   }
 
@@ -645,10 +708,14 @@ export function createArtifactCommentsProvider(deps: CommentsProviderDeps): Comm
         let entry = ledger.get(key);
         if (entry) {
           if (entry.requested !== requested) return fail('conflict', MESSAGES.requestReused);
+          // A request the user took back stays taken back for the ledger window: a late retry must not revive it.
+          if (entry.state === 'cancelled') return fail('conflict', MESSAGES.cancelled);
+          // The previous attempt is still writing its outcome: answering now would use a state that is about to change.
+          if (entry.settling && !entry.settled) return fail('busy', MESSAGES.settling);
           if (entry.promise) return entry.promise;
           if (entry.report) return done(entry.report);
         } else {
-          entry = { key, root: intake.root, artifactId: intake.manifest.id, requestId: parsed.requestId, requested, at: now(), state: 'idle', promise: null, report: null, plan: null, memberIds: [], settling: null };
+          entry = { key, root: intake.root, artifactId: intake.manifest.id, requestId: parsed.requestId, requested, at: now(), state: 'idle', promise: null, report: null, plan: null, memberIds: [], settling: null, settled: false };
           ledger.set(key, entry);
           trimLedger();
         }

@@ -99,6 +99,8 @@ export interface SystemTransition {
   readonly event: SystemEvent;
   readonly requestId?: string;
   readonly message?: string;
+  /** When set, the whole call is rejected `conflict` unless the comment is still at this version (the write-ahead of a send). */
+  readonly expectedVersion?: number;
 }
 
 export interface CommentRootHandle {
@@ -112,6 +114,8 @@ export interface CommentRootHandle {
   adopt(ids: readonly string[]): Promise<ArtifactCommentsResult<{ readonly adopted: readonly string[] }>>;
   /** Plugin-raised transitions for the send flow (P2b), applied atomically: all or nothing. */
   transition(items: readonly SystemTransition[]): Promise<ArtifactCommentsResult<{ readonly comments: readonly ArtifactComment[]; readonly stale: readonly string[] }>>;
+  /** The stored `lastBatchRequestId` of each comment (null when none). Internal: the public comment shape does not carry it. */
+  lastBatchRequestIds(ids: readonly string[]): Promise<ReadonlyMap<string, string | null>>;
   /** Selection ids of every stored comment: pass to `pruneSelections` as `protectIds`. */
   protectedSelectionIds(): Promise<string[]>;
   /** At most 8 live listeners; null at the cap. A single stat poll runs while at least one exists. */
@@ -641,6 +645,15 @@ export function createCommentStore(options: CommentStoreOptions): CommentStore {
       });
     }
 
+    lastBatchRequestIds(ids: readonly string[]): Promise<ReadonlyMap<string, string | null>> {
+      return this.locked(async () => {
+        const wanted = new Set(ids);
+        const out = new Map<string, string | null>();
+        for (const c of this.state.file.comments) if (wanted.has(c.id)) out.set(c.id, c.send.lastBatchRequestId ?? null);
+        return out;
+      });
+    }
+
     protectedSelectionIds(): Promise<string[]> {
       return this.locked(async () => {
         // An answer from a store that could not read (or had to repair) its file would be incomplete, and a
@@ -891,6 +904,7 @@ export function createCommentStore(options: CommentStoreOptions): CommentStore {
         if (typeof item !== 'object' || item === null || !isCommentId(item.id) || !SYSTEM_EVENTS.includes(item.event) || seen.has(item.id)) return rejected('invalid', 'Those changes are not valid.');
         if (item.requestId !== undefined && !isRequestId(item.requestId)) return rejected('invalid', 'Those changes are not valid.');
         if (item.message !== undefined && typeof item.message !== 'string') return rejected('invalid', 'Those changes are not valid.');
+        if (item.expectedVersion !== undefined && !isVersion(item.expectedVersion)) return rejected('invalid', 'Those changes are not valid.');
         seen.add(item.id);
       }
       return this.locked(async () => {
@@ -903,6 +917,7 @@ export function createCommentStore(options: CommentStoreOptions): CommentStore {
         for (const item of items) {
           const found = comments.find((c) => c.id === item.id);
           if (!found) return rejected('not-found', 'That comment no longer exists.');
+          if (item.expectedVersion !== undefined && found.version !== item.expectedVersion) return rejected('conflict', 'That comment changed. Refresh and try again.');
           if ((item.event === 'batch-issued' || item.event === 'batch-resend') && this.provenanceOf(found) !== 'local') return rejected('foreign', 'Adopt this comment before sending it.');
           // A result that belongs to a different batch request than the one that issued this comment is stale: skip it, not the others.
           if ((item.event === 'delivered' || item.event === 'send-failed' || item.event === 'expired') && (item.requestId ?? null) !== (found.send.lastBatchRequestId ?? null)) {
