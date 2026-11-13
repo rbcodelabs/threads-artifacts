@@ -292,3 +292,13 @@ describe('size limits', () => {
     expect(() => buildElementPrompt(input({ request, hints, maxLength: 1000 }))).toThrow(/too large/i);
   });
 });
+
+describe('URL defusing next to an escaped invisible character (shared with batch)', () => {
+  it('defuses http:// right after U+200B, and leaves a plain word-glued URL exactly as before', () => {
+    const request = validRequest() as any;
+    request.selection.landmark = '\u200bhttp://evil.example/x and xhttp://glued';
+    const prompt = buildElementPrompt({ request, artifactTitle: 'T', jsonPath: '/a.json', pngPath: null, hints: [], boundarySecret: 's' });
+    expect(prompt).not.toContain('\\u200bhttp://');
+    expect(prompt).toContain('xhttp://glued');
+  });
+});

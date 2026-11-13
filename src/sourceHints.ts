@@ -25,7 +25,7 @@ type Kind = 'html' | 'css' | 'js' | 'json';
 const CONFIDENCE_ORDER = { high: 0, med: 1, low: 2 } as const;
 const KIND_ORDER: Record<Kind, number> = { html: 0, css: 1, js: 2, json: 3 };
 
-interface SourceFile { readonly name: string; readonly kind: Kind; readonly lines: readonly string[] }
+export interface SourceFile { readonly name: string; readonly kind: Kind; readonly lines: readonly string[] }
 interface Candidate extends SourceHint { readonly step: number; readonly fileOrder: number }
 
 const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -51,7 +51,8 @@ async function readBounded(file: string): Promise<string | null> {
   }
 }
 
-async function loadFiles(root: string): Promise<SourceFile[]> {
+/** Reads the folder's candidate source files once. A batch loads them once and passes them to every `findSourceHints`. */
+export async function loadSourceFiles(root: string): Promise<SourceFile[]> {
   let names: string[];
   try { names = await fs.readdir(root); } catch { return []; }
   const wanted = names
@@ -80,9 +81,9 @@ async function loadFiles(root: string): Promise<SourceFile[]> {
 
 const snippetAround = (line: string, index: number): string => line.slice(Math.max(0, index - SNIPPET_BEFORE), index + SNIPPET_AFTER).trim();
 
-export async function findSourceHints(root: string, selection: ElementSelection, options: { budgetMs?: number } = {}): Promise<SourceHint[]> {
+export async function findSourceHints(root: string, selection: ElementSelection, options: { budgetMs?: number; files?: readonly SourceFile[] } = {}): Promise<SourceHint[]> {
   const deadline = Date.now() + (options.budgetMs ?? DEFAULT_BUDGET_MS);
-  const files = await loadFiles(root);
+  const files = options.files ?? await loadSourceFiles(root);
   if (files.length === 0) return [];
 
   const tagText = openingTag(selection.outerHTML.html);

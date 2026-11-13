@@ -305,4 +305,48 @@ describe('registerElementFeedback negotiation matrix', () => {
     // After dispose the provider is inert.
     expect(await handler.comments.list(target, { signal: new AbortController().signal })).toMatchObject({ status: 'rejected', reason: 'unavailable' });
   });
+
+  it('end to end: a pinned batch queued behind a running agent is delivered on drain, marks the comments sent, and unqueue stays quiet', async () => {
+    const root = await makeRoot();
+    const fake = createFakeApi();
+    fake.addThread('t1', { isRunning: true, artifacts: [{ providerId: 'agent-threads.design', kind: 'design-static', schemaVersion: 2, id: 'design-t1', title: 'Landing', data: {}, storageRoot: root }] });
+    const geode = negotiatingGeode([1, 2]);
+    const { guard } = guardFor();
+    const clock = createFakeClock();
+    const o = opts(geode, { api: fake.api, installKeys: guard, clock, now: () => Date.parse('2026-11-08T20:01:00.000Z') });
+    const disposable = registerElementFeedback(o)!;
+    const comments = geode.calls[0].handler.comments;
+    const target = { root, artifactId: 'design-t1', title: 'Landing', runtime: 'static', vaultRead: false };
+    const signal = new AbortController().signal;
+    for (const n of [1, 2]) {
+      const req = validRequest({ comment: `Pin ${n}` }) as any;
+      req.artifact.root = root;
+      req.selection.selectionId = `sel_${n.toString(16).padStart(32, '0')}`;
+      expect(await comments.save(target, { request: req }, { signal })).toMatchObject({ status: 'ok' });
+    }
+    const ids = [1, 2].map(n => `cmt_${n.toString(16).padStart(32, '0')}`);
+    const requestId = `req_${'e'.repeat(32)}`;
+    const queued = await comments.sendBatch(target, { requestId, ids, resend: false, anchorStates: {} }, { signal });
+    expect(queued).toMatchObject({ status: 'ok', value: { outcome: 'queued' } });
+    expect(fake.sends).toHaveLength(0);
+
+    fake.threads.get('t1')!.isRunning = false;
+    fake.emit({ kind: 'run.completed', threadId: 't1', runId: 'x' });
+    await clock.advance(300);
+    for (let i = 0; i < 100 && (await comments.list(target, { signal })).value.comments.some((c: any) => c.status === 'pending'); i++) await new Promise(resolve => setTimeout(resolve, 5));
+    expect(fake.sends).toHaveLength(1);
+    expect((await comments.list(target, { signal })).value.comments.map((c: any) => c.status)).toEqual(['sent', 'sent']);
+    expect(o.notify).toHaveBeenCalledWith('Design: your queued comment was sent to the thread.');
+
+    // A second batch is queued and then taken back: members return to open and nobody is told it failed.
+    fake.threads.get('t1')!.isRunning = true;
+    o.notify.mockClear();
+    const again = await comments.sendBatch(target, { requestId: `req_${'f'.repeat(32)}`, ids, resend: true, anchorStates: {} }, { signal });
+    expect(again).toMatchObject({ status: 'ok', value: { outcome: 'queued' } });
+    const member = (await comments.list(target, { signal })).value.comments[0];
+    expect(member.status).toBe('pending');
+    expect(await comments.update(target, { id: member.id, expectedVersion: member.version, change: { action: 'unqueue' } }, { signal })).toMatchObject({ status: 'ok', value: { status: 'open' } });
+    expect(o.notify).not.toHaveBeenCalled();
+    disposable.dispose();
+  });
 });

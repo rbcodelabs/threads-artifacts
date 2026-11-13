@@ -1,5 +1,5 @@
 import { constants as fsConstants } from 'node:fs';
-import { randomBytes } from 'node:crypto';
+import { createHmac, randomBytes } from 'node:crypto';
 import * as path from 'node:path';
 import {
   applyEvent,
@@ -9,6 +9,7 @@ import {
   canonicalJson,
   createStoredComment,
   isCommentId,
+  isPromptSha,
   isRequestId,
   MAX_COMMENTS,
   MAX_READ_BYTES,
@@ -54,6 +55,13 @@ import type {
 export type StoreFsOps = FsOps;
 export const defaultStoreFsOps: StoreFsOps = defaultOps;
 
+/**
+ * PERSISTED: never rename or change. The batch boundary token of every retry that is still pending is derived from
+ * HMAC(installKey, this label), so changing it invalidates every pending retry (they would all become conflicts).
+ * The "threads-design" in the value is deliberate and stays even if the repository or plugin is renamed.
+ */
+export const BATCH_SECRET_LABEL = 'threads-design/batch-boundary/v1';
+
 const COMMENTS_FILE = 'comments.json';
 const PREV_FILE = 'comments.prev.json';
 const TMP_FILE = /^comments\.[0-9a-f]{16}\.tmp$/;
@@ -94,11 +102,24 @@ export interface OpenTarget {
   readonly artifactId: string;
 }
 
+export interface BatchMark {
+  readonly requestId: string | null;
+  readonly promptSha: string | null;
+  /** ISO time of the write-ahead (store clock). */
+  readonly issuedAt: string | null;
+}
+
 export interface SystemTransition {
   readonly id: string;
   readonly event: SystemEvent;
   readonly requestId?: string;
   readonly message?: string;
+  /** When set, the whole call is rejected `conflict` unless the comment is still at this version (the write-ahead of a send). */
+  readonly expectedVersion?: number;
+  /** batch-issued / batch-resend: SHA-256 hex of the prompt about to be sent (kept privately, never in the public comment). */
+  readonly promptSha?: string;
+  /** send-failed: the message may nevertheless have reached the thread. */
+  readonly maybeSent?: boolean;
 }
 
 export interface CommentRootHandle {
@@ -112,6 +133,13 @@ export interface CommentRootHandle {
   adopt(ids: readonly string[]): Promise<ArtifactCommentsResult<{ readonly adopted: readonly string[] }>>;
   /** Plugin-raised transitions for the send flow (P2b), applied atomically: all or nothing. */
   transition(items: readonly SystemTransition[]): Promise<ArtifactCommentsResult<{ readonly comments: readonly ArtifactComment[]; readonly stale: readonly string[] }>>;
+  /** Which batch request last issued each comment and the hash of its prompt (null when none). Internal: the public comment shape does not carry them. */
+  batchMarks(ids: readonly string[]): Promise<ReadonlyMap<string, BatchMark>>;
+  /**
+   * The secret the batch boundary token is derived from: an HMAC of a fixed label under the install key. Stable across
+   * reloads (so one request id builds one prompt), never the key itself, and never handed to Geode or the page.
+   */
+  batchSecret(): Promise<string>;
   /** Selection ids of every stored comment: pass to `pruneSelections` as `protectIds`. */
   protectedSelectionIds(): Promise<string[]>;
   /** At most 8 live listeners; null at the cap. A single stat poll runs while at least one exists. */
@@ -641,6 +669,19 @@ export function createCommentStore(options: CommentStoreOptions): CommentStore {
       });
     }
 
+    batchMarks(ids: readonly string[]): Promise<ReadonlyMap<string, BatchMark>> {
+      return this.locked(async () => {
+        const wanted = new Set(ids);
+        const out = new Map<string, BatchMark>();
+        for (const c of this.state.file.comments) if (wanted.has(c.id)) out.set(c.id, { requestId: c.send.lastBatchRequestId ?? null, promptSha: c.send.lastBatchPromptSha ?? null, issuedAt: c.send.lastBatchAt ?? null });
+        return out;
+      });
+    }
+
+    async batchSecret(): Promise<string> {
+      return createHmac('sha256', await this.ensureKey()).update(BATCH_SECRET_LABEL).digest('hex');
+    }
+
     protectedSelectionIds(): Promise<string[]> {
       return this.locked(async () => {
         // An answer from a store that could not read (or had to repair) its file would be incomplete, and a
@@ -891,6 +932,9 @@ export function createCommentStore(options: CommentStoreOptions): CommentStore {
         if (typeof item !== 'object' || item === null || !isCommentId(item.id) || !SYSTEM_EVENTS.includes(item.event) || seen.has(item.id)) return rejected('invalid', 'Those changes are not valid.');
         if (item.requestId !== undefined && !isRequestId(item.requestId)) return rejected('invalid', 'Those changes are not valid.');
         if (item.message !== undefined && typeof item.message !== 'string') return rejected('invalid', 'Those changes are not valid.');
+        if (item.expectedVersion !== undefined && !isVersion(item.expectedVersion)) return rejected('invalid', 'Those changes are not valid.');
+        if (item.promptSha !== undefined && !isPromptSha(item.promptSha)) return rejected('invalid', 'Those changes are not valid.');
+        if (item.maybeSent !== undefined && typeof item.maybeSent !== 'boolean') return rejected('invalid', 'Those changes are not valid.');
         seen.add(item.id);
       }
       return this.locked(async () => {
@@ -903,13 +947,14 @@ export function createCommentStore(options: CommentStoreOptions): CommentStore {
         for (const item of items) {
           const found = comments.find((c) => c.id === item.id);
           if (!found) return rejected('not-found', 'That comment no longer exists.');
+          if (item.expectedVersion !== undefined && found.version !== item.expectedVersion) return rejected('conflict', 'That comment changed. Refresh and try again.');
           if ((item.event === 'batch-issued' || item.event === 'batch-resend') && this.provenanceOf(found) !== 'local') return rejected('foreign', 'Adopt this comment before sending it.');
           // A result that belongs to a different batch request than the one that issued this comment is stale: skip it, not the others.
           if ((item.event === 'delivered' || item.event === 'send-failed' || item.event === 'expired') && (item.requestId ?? null) !== (found.send.lastBatchRequestId ?? null)) {
             stale.push(item.id);
             continue;
           }
-          const next = applyEvent(found, item.event, { now: at, requestId: item.requestId ?? null, message: item.message ?? null });
+          const next = applyEvent(found, item.event, { now: at, requestId: item.requestId ?? null, message: item.message ?? null, promptSha: item.promptSha ?? null, maybeSent: item.maybeSent });
           if (next === null) return rejected('invalid-transition', 'That change is not allowed for a comment in this state.');
           comments = this.replace(comments, next);
           appliedIds.push(item.id);

@@ -64,7 +64,7 @@ describe('busy threads', () => {
     expect(fake.sends).toHaveLength(0); // settle delay
     await clock.advance(300);
     expect(fake.sends).toHaveLength(1);
-    expect(deferred).toEqual([{ selectionId: 'sel_a', outcome: { status: 'sent' } }]);
+    expect(deferred).toEqual([{ selectionId: 'sel_a', artifactKey: 'art-1', outcome: { status: 'sent' } }]);
     expect(coordinator.pendingCount).toBe(0);
   });
 
@@ -228,7 +228,7 @@ describe('failure mapping', () => {
     fake.sendErrors.push(new FakeApiError('IDEMPOTENCY_CONFLICT'));
     await clock.advance(5000);
     expect(deferred).toHaveLength(1);
-    expect(deferred[0]).toMatchObject({ selectionId: 'sel_a', outcome: { status: 'rejected', reason: 'failed' } });
+    expect(deferred[0]).toMatchObject({ selectionId: 'sel_a', artifactKey: 'art-1', outcome: { status: 'rejected', reason: 'failed' } });
     expect(coordinator.pendingCount).toBe(0);
     expect(await coordinator.submit(req('sel_b'))).toEqual({ status: 'sent' });
   });
@@ -240,7 +240,7 @@ describe('failure mapping', () => {
     fake.emit({ kind: 'thread.removed', threadId: 't1' });
     await clock.flush();
     expect(coordinator.pendingCount).toBe(0);
-    expect(deferred[0]).toMatchObject({ selectionId: 'sel_a', outcome: { status: 'rejected', reason: 'unavailable' } });
+    expect(deferred[0]).toMatchObject({ selectionId: 'sel_a', artifactKey: 'art-1', outcome: { status: 'rejected', reason: 'unavailable' } });
   });
 });
 
@@ -297,7 +297,7 @@ describe('pending slot expiry (A9)', () => {
     await clock.advance(2000);
     expect(coordinator.pendingCount).toBe(0);
     expect(deferred).toHaveLength(1);
-    expect(deferred[0]).toMatchObject({ selectionId: 'sel_a', outcome: { status: 'rejected', reason: 'unavailable', message: expect.stringContaining('waited too long') } });
+    expect(deferred[0]).toMatchObject({ selectionId: 'sel_a', artifactKey: 'art-1', outcome: { status: 'rejected', reason: 'unavailable', message: expect.stringContaining('waited too long') } });
     expect(fake.listenerCount).toBe(0);
     expect(clock.pending).toBe(0);
   });
@@ -321,7 +321,7 @@ describe('dispose notices and status-unknown (A9, QB4)', () => {
     await coordinator.submit(req('sel_a'));
     coordinator.dispose();
     expect(deferred).toHaveLength(1);
-    expect(deferred[0]).toMatchObject({ selectionId: 'sel_a', outcome: { status: 'rejected', message: expect.stringContaining('reloaded') } });
+    expect(deferred[0]).toMatchObject({ selectionId: 'sel_a', artifactKey: 'art-1', outcome: { status: 'rejected', message: expect.stringContaining('reloaded') } });
   });
 
   it('survives an onDeferredResult callback that throws', async () => {
@@ -366,6 +366,7 @@ describe('hung sends (QB2)', () => {
     const coordinator = make();
     fake.state.hangSends = 1;
     const first = coordinator.submit(req('sel_a', 'same prompt'));
+    await clock.flush(); // the attempt reaches the hung send before the timeout fires (a run that times out earlier is abandoned)
     await clock.advance(ATTEMPT_TIMEOUT_MS + 100);
     const outcome = await first;
     expect(outcome).toMatchObject({ status: 'rejected', reason: 'failed', message: expect.stringContaining('check the thread') });
@@ -396,6 +397,7 @@ describe('attempt timeout vs the Geode submit timeout', () => {
     const coordinator = make();
     fake.state.hangSends = 1;
     const first = coordinator.submit(req('sel_a', 'same prompt'));
+    await clock.flush(); // the attempt reaches the hung send before the timeout fires
     await clock.advance(ARTIFACT_FEEDBACK_SUBMIT_TIMEOUT_MS); // Geode gives up here
     expect(await first).toMatchObject({ status: 'rejected', message: expect.stringContaining('check the thread') });
     expect(await coordinator.submit(req('sel_a', 'same prompt'))).toEqual({ status: 'sent' });

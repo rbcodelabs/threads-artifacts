@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { createHmac } from 'node:crypto';
 import * as fsSync from 'node:fs';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
@@ -1210,5 +1211,54 @@ describe('ids are validated before any path is built', () => {
     }
     for (const call of log) for (const part of ['etc', 'passwd', '..']) expect(`${call.path} ${call.to ?? ''}`.includes(`${path.sep}${part}`)).toBe(false);
     expect(deriveCommentId(hostile[0])).toBeNull();
+  });
+});
+
+describe('P2b reload safety: prompt hash, uncertain failures, stable batch secret', () => {
+  const SHA = 'ab'.repeat(32);
+  const RID = `req_${'c'.repeat(32)}`;
+
+  it('batch-issued stores the prompt hash next to the request id, and batchMarks reads both back', async () => {
+    const h = await openWith();
+    for (const n of [1, 2]) ok(await h.create(pinDraft(n)));
+    ok(await h.transition([{ id: cmtId(1), event: 'batch-issued', requestId: RID, promptSha: SHA }]));
+    const marks = await h.batchMarks([cmtId(1), cmtId(2)]);
+    expect(marks.get(cmtId(1))).toEqual({ requestId: RID, promptSha: SHA, issuedAt: NOW });
+    expect(marks.get(cmtId(2))).toEqual({ requestId: null, promptSha: null, issuedAt: null });
+    // It survives a restart and is never part of the public comment.
+    const again = await openWith();
+    expect((await again.batchMarks([cmtId(1)])).get(cmtId(1))).toEqual({ requestId: RID, promptSha: SHA, issuedAt: NOW });
+    expect(JSON.stringify((await again.snapshot()).comments)).not.toContain(SHA);
+  });
+
+  it('rejects a malformed prompt hash or maybeSent flag without changing anything', async () => {
+    const h = await openWith();
+    ok(await h.create(pinDraft(1)));
+    expect(reason(await h.transition([{ id: cmtId(1), event: 'batch-issued', requestId: RID, promptSha: 'nope' }]))).toBe('invalid');
+    expect(reason(await h.transition([{ id: cmtId(1), event: 'batch-issued', requestId: RID, promptSha: SHA, maybeSent: 'yes' as never }]))).toBe('invalid');
+    expect(ok(await h.get(cmtId(1)))).toMatchObject({ status: 'open', version: 1 });
+  });
+
+  it('send-failed with maybeSent keeps lastOutcome failed and flags maybeSent; without the flag maybeSent is unchanged', async () => {
+    const h = await openWith();
+    for (const n of [1, 2]) ok(await h.create(pinDraft(n)));
+    ok(await h.transition([1, 2].map((n) => ({ id: cmtId(n), event: 'batch-issued' as const, requestId: RID }))));
+    ok(await h.transition([{ id: cmtId(1), event: 'send-failed', requestId: RID, message: 'may have been received', maybeSent: true }]));
+    ok(await h.transition([{ id: cmtId(2), event: 'send-failed', requestId: RID, message: 'refused' }]));
+    const [c1, c2] = (await h.snapshot()).comments;
+    expect(c1.send).toMatchObject({ lastOutcome: 'failed', maybeSent: true });
+    expect(c2.send).toMatchObject({ lastOutcome: 'failed', maybeSent: false });
+  });
+
+  it('batchSecret is the same for one install key across stores and restarts, differs per key, and is a derived value, not the key', async () => {
+    const a1 = await (await makeStore().open({ root, artifactId: ARTIFACT_ID })).batchSecret();
+    const a2 = await (await makeStore().open({ root, artifactId: ARTIFACT_ID })).batchSecret();
+    const b = await (await makeStore({ keys: { getKey: async () => OTHER_KEY } }).open({ root, artifactId: ARTIFACT_ID })).batchSecret();
+    expect(a1).toBe(a2);
+    expect(a1).not.toBe(b);
+    expect(a1).toMatch(/^[0-9a-f]{64}$/);
+    expect(a1).not.toBe(Buffer.from(KEY).toString('hex'));
+    // The label is persisted in every pending retry's token: it must never change (a rename invalidates them all).
+    expect(a1).toBe(createHmac('sha256', KEY).update('threads-design/batch-boundary/v1').digest('hex'));
   });
 });
