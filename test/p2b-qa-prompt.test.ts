@@ -558,6 +558,7 @@ describe('fix pass: artifact folder line', () => {
 describe('fix pass: extended invisible set versus the pre-P2b single-send builder', () => {
   const NEW_SET = [0x034f, 0x115f, 0x1160, 0x17b4, 0x17b5, 0x180b, 0x180e, 0x206a, 0x206f, 0x2800, 0x3164, 0xfe00, 0xfe0f, 0xffa0, 0x1d173, 0x1d17a, 0xe0100, 0xe01ef];
   const raw = (cp: number) => String.fromCodePoint(cp);
+  const defused = (t: string) => t.replace(/(https?):\u200b\/\//gi, '$1://');
   const unescapeNew = (text: string): string => NEW_SET.reduce((out, cp) => out.split(cp > 0xffff ? '\\u{' + cp.toString(16) + '}' : '\\u' + cp.toString(16).padStart(4, '0')).join(raw(cp)), text);
 
   it('single-send output differs from the old builder only by escaping the newly listed characters (60 seeded requests)', () => {
@@ -571,7 +572,6 @@ describe('fix pass: extended invisible set versus the pre-P2b single-send builde
       const run = (fn: (i: typeof common) => string): string => { try { return fn(common); } catch (error) { return 'THROW:' + (error as Error).message; } };
       const fresh = run(buildElementPrompt as never);
       const old = defused(run(buildElementPromptOld as never));
-      const defused = (t: string) => t.replace(/(https?):\u200b\/\//gi, '$1://');
       const got = defused(unescapeNew(fresh));
       if (got !== old) { let i = 0; while (got[i] === old[i]) i++; expect.fail('round ' + round + ' first difference at ' + i + ': new=' + JSON.stringify(got.slice(Math.max(0, i - 40), i + 60)) + ' old=' + JSON.stringify(old.slice(Math.max(0, i - 40), i + 60))); }
       for (const cp of NEW_SET) expect(fresh.includes(raw(cp)), 'U+' + cp.toString(16) + ' raw in new output').toBe(false);
