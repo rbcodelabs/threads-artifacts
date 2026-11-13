@@ -53,6 +53,9 @@ export interface SelectionFilesResult {
   readonly pngPath: string | null;
   /** True when every requested file already existed (a retry of the same selection id). */
   readonly replay: boolean;
+  /** True only when THIS call created the file. Cleanup after a failed follow-up may remove only what it created. */
+  readonly createdJson: boolean;
+  readonly createdPng: boolean;
 }
 
 export const fileError = (message: string, cause?: unknown): SelectionFileError => {
@@ -130,7 +133,7 @@ export async function writeSelectionFiles(input: SelectionFilesInput, ops: FsOps
     const writePng = input.png !== null && !input.vaultRead;
     const png = writePng ? await writeOnce(ops, selections, `${input.selectionId}.png`, input.png as Uint8Array) : null;
     const json = await writeOnce(ops, selections, `${input.selectionId}.json`, input.json);
-    return { jsonPath: json.path, pngPath: png ? png.path : null, replay: json.existed && (png === null || png.existed) };
+    return { jsonPath: json.path, pngPath: png ? png.path : null, replay: json.existed && (png === null || png.existed), createdJson: !json.existed, createdPng: png !== null && !png.existed };
   } catch (error) {
     throw error instanceof SelectionFileError ? error : fileError('Could not save the selection files.', error);
   }
@@ -210,4 +213,68 @@ export async function pruneSelections(input: PruneInput, ops: FsOps = defaultOps
     // Retention is best-effort; a failure leaves files in place.
   }
   return { removed };
+}
+
+const MAX_SELECTION_JSON_BYTES = 256 * 1024;
+const SELECTION_READ_FLAGS = nodeFs.constants.O_RDONLY | ((nodeFs.constants as unknown as Record<string, number | undefined>).O_NOFOLLOW ?? 0);
+
+/** Verified `.threads-design/selections` directory for a root, or null when anything about it is not a plain real directory. */
+async function verifiedSelectionsDir(ops: FsOps, root: string): Promise<string | null> {
+  if (!path.isAbsolute(root)) return null;
+  const rootReal = await ops.realpath(root);
+  const selections = path.join(rootReal, SIDECAR_DIR, SELECTIONS_DIR);
+  for (const dir of [path.join(rootReal, SIDECAR_DIR), selections]) {
+    const stat = await lstatOrNull(ops, dir);
+    if (stat === null || stat.isSymbolicLink() || !stat.isDirectory() || (await ops.realpath(dir)) !== dir) return null;
+  }
+  return selections;
+}
+
+/**
+ * Reads `selections/<id>.json` as text, or null when it is missing, oversize, not a regular single-link
+ * file, a symlink, or anything else unexpected. Never follows links. The caller validates the content.
+ */
+export async function readSelectionJson(root: string, selectionId: string, ops: FsOps = defaultOps): Promise<string | null> {
+  try {
+    if (!SELECTION_ID_PATTERN.test(selectionId)) return null;
+    const dir = await verifiedSelectionsDir(ops, root);
+    if (dir === null) return null;
+    const file = path.join(dir, `${selectionId}.json`);
+    const before = await lstatOrNull(ops, file);
+    if (before === null || before.isSymbolicLink() || !before.isFile() || before.nlink > 1 || before.size > MAX_SELECTION_JSON_BYTES) return null;
+    const handle = await ops.open(file, SELECTION_READ_FLAGS);
+    try {
+      const stat = await handle.stat();
+      if (!stat.isFile() || stat.nlink > 1 || stat.size > MAX_SELECTION_JSON_BYTES || (before.ino && stat.ino && before.ino !== stat.ino)) return null;
+      // Read at most cap+1 bytes: a file that grew after the size check is rejected, never buffered whole.
+      const buffer = Buffer.alloc(MAX_SELECTION_JSON_BYTES + 1);
+      let filled = 0;
+      while (filled < buffer.length) {
+        const { bytesRead } = await handle.read(buffer, filled, buffer.length - filled, filled);
+        if (bytesRead === 0) break;
+        filled += bytesRead;
+      }
+      return filled > MAX_SELECTION_JSON_BYTES ? null : buffer.subarray(0, filled).toString('utf8');
+    } finally {
+      await handle.close().catch(() => undefined);
+    }
+  } catch {
+    return null;
+  }
+}
+
+/** Best-effort removal of one selection's own json and png (ids matched against the exact pattern, directory re-verified). */
+export async function removeSelectionFiles(root: string, selectionId: string, which: { readonly json: boolean; readonly png: boolean }, ops: FsOps = defaultOps): Promise<void> {
+  try {
+    if (!SELECTION_ID_PATTERN.test(selectionId)) return;
+    const dir = await verifiedSelectionsDir(ops, root);
+    if (dir === null) return;
+    for (const ext of (['json', 'png'] as const).filter((e) => which[e])) {
+      const file = path.join(dir, `${selectionId}.${ext}`);
+      const stat = await lstatOrNull(ops, file);
+      if (stat !== null && stat.isFile() && !stat.isSymbolicLink()) await ops.rm(file, { force: true });
+    }
+  } catch {
+    // Retention will collect leftovers.
+  }
 }

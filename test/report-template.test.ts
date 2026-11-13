@@ -255,7 +255,9 @@ describe('report scaffold marks for the element picker (H2)', () => {
 
   it('marks legend items and swatches with the series name', () => {
     const html = api.renderFigure(stacked, 'chart-revenue');
-    expect(html).toContain('<li class="s0" data-series="Salary"><span class="swatch" data-series="Salary" aria-hidden="true"></span>Salary</li>');
+    expect(html).toContain('<li class="s0" data-series="Salary"><span class="swatch" data-series="Salary" role="img" aria-label="Salary legend color"></span>Salary</li>');
+    // The swatch is an image with a name, never hidden: every legend color has an accessible name.
+    expect(html).not.toContain('aria-hidden');
   });
 
   it('escapes hostile series and category names in the new attributes', () => {
@@ -264,6 +266,7 @@ describe('report scaffold marks for the element picker (H2)', () => {
     expect(html).not.toContain('<img');
     expect(html).not.toContain('" onload="x');
     expect(html).toContain('data-series="&quot; onload=&quot;x"');
+    expect(html).toContain('aria-label="&quot; onload=&quot;x legend color"');
   });
 
   it('puts a stable id on each figure in the page and in the scaffold html', () => {

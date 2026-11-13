@@ -295,6 +295,15 @@ function build(raw: unknown): ArtifactFeedbackRequest {
   };
 }
 
+/** Validates a stored selection snapshot (the sidecar's `selection`) with the same rules as a request. Null when invalid. */
+export function validateStoredSelection(raw: unknown, artifactId: string): ElementSelection | null {
+  try {
+    return selection(raw, artifactId);
+  } catch {
+    return null;
+  }
+}
+
 export function validateFeedbackRequest(raw: unknown): ValidationResult {
   try {
     return { ok: true, value: build(raw) };

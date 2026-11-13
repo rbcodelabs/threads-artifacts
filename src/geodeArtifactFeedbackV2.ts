@@ -1,10 +1,20 @@
-// Vendored copy of the contract v2 types for pinned comments (Phase 2b-i), ADR 0006 addendum 1.
-// Source: section 1.2 of the Phase 2b-i design note (threads-design-2026-11-12-p2b-contract-v2-design.md).
-// Geode's G1 PR (src/artifacts/feedback-contract-v2.ts) is being built in parallel. When G1 lands, RE-DIFF this
-// file against Geode's feedback-contract-v2.ts and update the hash in test/geode-contract-v2-vendor.test.ts.
-// Everything below the marker is the design note's code block byte-for-byte, except the ONE import specifier
-// ("./feedback-contract" became "./geodeArtifactFeedback", the plugin's vendored v1 file name).
+// Vendored copy of Geode's src/artifacts/feedback-contract-v2.ts (artifact feedback contract v2, ADR 0006 addendum 1).
+// Source: rbcodelabs/geode feat/picker-pins-g1-contract-v2 @ 7e75a77451aa3cd0f083212be1adf9c25521440b (PR #457;
+// file last changed in 276e9ac2574814a3fe55dc71c9a9a107be195ac6). Everything below the marker is byte-for-byte
+// that file, except the ONE import specifier ("./feedback-contract" became "./geodeArtifactFeedback", the
+// plugin's vendored v1 file name). When Geode changes it, RE-DIFF and update the hash in
+// test/geode-contract-v2-vendor.test.ts.
 // --- begin verbatim copy ---
+/**
+ * Artifact feedback contract, version 2 (ADR 0006 Addendum 1, Phase 2b-i).
+ *
+ * A superset of v1 in a new file: `feedback-contract.ts` is unchanged (a test hashes it) and this file takes one
+ * `import type` from it. A v2 handler is a v1 handler (it still implements `submit`) plus `contractVersion: 2` and a
+ * required `comments` provider. Types and constants only, so the Design plugin can vendor a verbatim copy.
+ *
+ * The block from the import below to the end of the file is the normative text of ADR 0006 Addendum 1, A.3, and is
+ * kept identical to it by a unit test.
+ */
 import type {
   ArtifactFeedbackHandler,
   ArtifactFeedbackRequest,
