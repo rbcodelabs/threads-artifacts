@@ -687,6 +687,17 @@ describe('queued results and the retry window', () => {
     expect(ok<any>(await send([1], rid('a'))).outcome).toBe('sent');
   });
 
+  it('a late rejected result for a request that already settled as sent changes neither the comments nor the remembered report', async () => {
+    await pins(1);
+    ok(await send([1], rid('a')));
+    const bytes = await fs.readFile(commentsFile(), 'utf8');
+    await controller.handleDeferredResult({ selectionId: rid('a'), outcome: { status: 'rejected', reason: 'failed', message: 'late' } });
+    await controller.handleDeferredResult({ selectionId: rid('a'), outcome: { status: 'cancelled' } });
+    expect(await fs.readFile(commentsFile(), 'utf8')).toBe(bytes);
+    expect(ok<any>(await send([1], rid('a'))).outcome, 'the retry must still be answered from the ledger').toBe('sent');
+    expect(fake.sends).toHaveLength(1);
+  });
+
   it('malformed deferred results are ignored without throwing', async () => {
     await pins(1);
     running(true);
@@ -1003,6 +1014,14 @@ describe('vault-read artifacts: nothing from the page text reaches a batch promp
     await fs.writeFile(file, JSON.stringify(parsed));
     ok(await send([1], rid('a')));
     expect(fake.sends[0].prompt).not.toContain(VAULT);
+  });
+
+  it('a pin saved BEFORE the artifact gained vault:read: the full selection snapshot (outerHTML) is not used, only the stored anchor', async () => {
+    await pin(1, {}, { outerHTML: { html: '<h1>VAULTHTML-ONLY-IN-SNAPSHOT</h1>', truncated: false } });
+    await fs.writeFile(path.join(root, 'artifact.json'), JSON.stringify({ ...buildDesignManifest('t1', 'Landing'), ...vaultManifest }));
+    ok(await send([1], rid('a')));
+    expect(fake.sends[0].prompt).not.toContain('VAULTHTML');
+    expect(fake.sends[0].prompt).toContain('selection snapshot: unavailable');
   });
 
   it.fails('BUG (advisory): a pin saved BEFORE the artifact gained vault:read still sends its stored anchor text, label and landmark', async () => {

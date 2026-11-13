@@ -308,6 +308,19 @@ describe('size rules', () => {
     }
   });
 
+  it('when only the FIRST comment fits, a prefix of exactly one is sent and the others are deferred (not marked too large)', () => {
+    const small = item(1, { selectionPatch: { computedStyles: {}, ancestors: [], selectorAlternates: [], outerHTML: { html: '<b>x</b>', truncated: false } } });
+    const big = (n: number) => item(n, { commentText: 'z'.repeat(2500), selectionPatch: { computedStyles: {}, ancestors: [], selectorAlternates: [], outerHTML: { html: '<b>x</b>', truncated: false } } });
+    const items = [small, big(2), big(3)];
+    const oneLength = (buildBatchPrompt(input([small], { maxLength: 1_000_000 })).prompt as string).length;
+    const twoLength = (buildBatchPrompt(input([small, big(2)], { maxLength: 1_000_000 })).prompt as string).length;
+    expect(twoLength).toBeGreaterThan(oneLength + 100);
+    const r = buildBatchPrompt(input(items, { maxLength: oneLength + 50 }));
+    expect(r.includedIds).toEqual([cmtId(1)]);
+    expect(r.deferredIds).toEqual([cmtId(2), cmtId(3)]);
+    expect(r.tooLargeIds).toEqual([]);
+  });
+
   it('deferred and too-large comments are absent from the prompt body entirely', () => {
     const big = (n: number) => item(n, { commentText: `UNIQUE-BODY-${n}`, selectionPatch: { outerHTML: { html: `<p>${'h'.repeat(1400)}</p>`, truncated: false } } });
     const items = [1, 2, 3, 4, 5].map(big);
