@@ -39,7 +39,7 @@ describe('cancel versus a drain that has not started sending', () => {
     gate.hold = false; gate.release();
     await clock.flush(); await clock.advance(POLL_INTERVAL_MS * 3);
     expect(fake.sends).toHaveLength(0);
-    expect(deferred).toEqual([{ selectionId: 'req_a', outcome: { status: 'cancelled' } }]);
+    expect(deferred).toEqual([{ selectionId: 'req_a', artifactKey: 'art-1', outcome: { status: 'cancelled' } }]);
     expect(coordinator.pendingCount).toBe(0);
     expect(await coordinator.submit(req('req_b'))).toEqual({ status: 'sent' });
   });
@@ -59,7 +59,7 @@ describe('cancel versus a drain that has not started sending', () => {
     release();
     await clock.flush(); await clock.advance(10);
     expect(fake.sends).toHaveLength(1);
-    expect(deferred).toEqual([{ selectionId: 'req_a', outcome: { status: 'sent' } }]);
+    expect(deferred).toEqual([{ selectionId: 'req_a', artifactKey: 'art-1', outcome: { status: 'sent' } }]);
     expect(coordinator.cancel('art-1', 'req_a'), 'too late once sent').toBe(false);
   });
 
@@ -74,7 +74,7 @@ describe('cancel versus a drain that has not started sending', () => {
     expect(fake.sends).toHaveLength(0);
     expect(coordinator.pendingCount).toBe(1);
     expect(coordinator.cancel('art-1', 'req_a')).toBe(true);
-    expect(deferred).toEqual([{ selectionId: 'req_a', outcome: { status: 'cancelled' } }]);
+    expect(deferred).toEqual([{ selectionId: 'req_a', artifactKey: 'art-1', outcome: { status: 'cancelled' } }]);
   });
 
   it('after a transient host error in the drain the slot is kept, cancel works, and the next poll retries', async () => {
@@ -106,7 +106,7 @@ describe('cancel versus a drain that has not started sending', () => {
     gate.fail = false;
     await clock.advance(POLL_INTERVAL_MS * 3);
     expect(fake.sends).toHaveLength(0);
-    expect(deferred).toEqual([{ selectionId: 'req_a', outcome: { status: 'cancelled' } }]);
+    expect(deferred).toEqual([{ selectionId: 'req_a', artifactKey: 'art-1', outcome: { status: 'cancelled' } }]);
   });
 });
 
@@ -128,7 +128,7 @@ describe('cancel versus other ways a slot ends', () => {
     expect(coordinator.cancel('art-1', 'req_a')).toBe(true);
     fake.emit({ kind: 'thread.removed', threadId: 't1' });
     await clock.advance(PENDING_TTL_MS + 1);
-    expect(deferred).toEqual([{ selectionId: 'req_a', outcome: { status: 'cancelled' } }]);
+    expect(deferred).toEqual([{ selectionId: 'req_a', artifactKey: 'art-1', outcome: { status: 'cancelled' } }]);
   });
 
   it('cancel then an immediate submit of another request in the same tick queues the new one and the old one never sends', async () => {
@@ -167,7 +167,7 @@ describe('cancel versus other ways a slot ends', () => {
     expect(coordinator.cancel('art-1', 'req_b'), 'req_b belongs to art-2').toBe(false);
     expect(coordinator.cancel('art-2', 'req_b')).toBe(true);
     expect(coordinator.pendingCount).toBe(1);
-    expect(deferred).toEqual([{ selectionId: 'req_b', outcome: { status: 'cancelled' } }]);
+    expect(deferred).toEqual([{ selectionId: 'req_b', artifactKey: 'art-2', outcome: { status: 'cancelled' } }]);
   });
 
   it('a throwing onDeferredResult does not break cancel or the slot map', async () => {
@@ -211,7 +211,7 @@ describe('isBusy', () => {
     expect(coordinator.isBusy('art-1', 'req_b')).toBe(false);
   });
 
-  it.fails('BUG B1 (coordinator level): a submit that already reported a timeout must not later create a held slot', async () => {
+  it('BUG B1 (coordinator level): a submit that already reported a timeout must not later create a held slot', async () => {
     const { fake, clock, coordinator, gate } = setup({ holdGet: true });
     fake.threads.get('t1')!.isRunning = true;
     gate.hold = true;

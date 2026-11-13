@@ -2,7 +2,7 @@ import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { findSourceHints, MAX_FILE_BYTES } from '../src/sourceHints';
+import { findSourceHints, loadSourceFiles, MAX_FILE_BYTES } from '../src/sourceHints';
 import { validRequest } from './helpers/feedbackFixtures';
 
 let root: string;
@@ -135,5 +135,17 @@ describe('findSourceHints', () => {
 
   it('returns [] for a missing root instead of throwing', async () => {
     expect(await findSourceHints(path.join(root, 'nope'), selection())).toEqual([]);
+  });
+});
+
+describe('shared source file load (one read for a whole batch)', () => {
+  it('hints computed from a preloaded file set equal hints computed by reading the folder, and do not read it again', async () => {
+    await write('index.html', html);
+    const files = await loadSourceFiles(root);
+    const direct = await findSourceHints(root, selection());
+    await fs.rm(path.join(root, 'index.html'));
+    const shared = await findSourceHints(root, selection(), { files });
+    expect(shared).toEqual(direct);
+    expect(shared.length).toBeGreaterThan(0);
   });
 });

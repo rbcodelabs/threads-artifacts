@@ -100,7 +100,7 @@ function fieldItem(n: number, text: () => string, opts: { snapshot: boolean }): 
   });
 }
 
-const LABELS = /^(pin label: |selection id: |selection snapshot: unavailable|artifact title: |route: |selector: |alternates: |text anchor: <|landmark: |bounding box \(viewport px\): |viewport: |a11y: |ancestors: |computed styles: |outerHTML|source hints|  \d+\. )/;
+const LABELS = /^(pin label: |selection id: |selection snapshot: unavailable|artifact folder: |artifact title: |route: |selector: |alternates: |text anchor: <|landmark: |bounding box \(viewport px\): |viewport: |a11y: |ancestors: |computed styles: |outerHTML|source hints|  \d+\. )/;
 
 interface ParsedBlock { header: string; fence: string; body: string[]; lines: string[] }
 
@@ -425,7 +425,7 @@ describe('worst-case cost (the main thread builds this)', () => {
 describe('invisible characters in page text', () => {
   // These code points render as nothing (or as filler) and can hide text from a human reading the transcript.
   const INVISIBLE = ['180e', '3164', '115f', '1160', 'ffa0', '2800', '17b4', '17b5', 'fe00', 'fe0f', '034f', '206a', '206f', '2065'];
-  it.fails('ADVISORY: invisible filler and variation selectors in a pin label or selector are escaped like the other invisible characters', () => {
+  it('ADVISORY: invisible filler and variation selectors in a pin label or selector are escaped like the other invisible characters', () => {
     const hostileText = 'a' + INVISIBLE.map(hex => String.fromCodePoint(Number.parseInt(hex, 16))).join('') + 'b';
     const { prompt } = build([item(1, { label: hostileText, selectionPatch: { selector: hostileText } })]);
     for (const hex of INVISIBLE) expect(prompt.includes(String.fromCodePoint(Number.parseInt(hex, 16))), 'U+' + hex + ' reached the prompt raw').toBe(false);

@@ -23,7 +23,7 @@ describe('sendCoordinator.cancel (unqueue)', () => {
 
     expect(coordinator.cancel('art-1', 'req_a')).toBe(true);
     expect(coordinator.pendingCount).toBe(0);
-    expect(deferred).toEqual([{ selectionId: 'req_a', outcome: { status: 'cancelled' } }]);
+    expect(deferred).toEqual([{ selectionId: 'req_a', artifactKey: 'art-1', outcome: { status: 'cancelled' } }]);
 
     fake.threads.get('t1')!.isRunning = false;
     fake.emit({ kind: 'run.completed', threadId: 't1' } as never);
@@ -75,7 +75,7 @@ describe('sendCoordinator.cancel (unqueue)', () => {
     release();
     await clock.advance(10);
     expect(fake.sends).toHaveLength(1);
-    expect(deferred).toEqual([{ selectionId: 'req_a', outcome: { status: 'sent' } }]);
+    expect(deferred).toEqual([{ selectionId: 'req_a', artifactKey: 'art-1', outcome: { status: 'sent' } }]);
   });
 
   it('does not report anything after dispose', async () => {

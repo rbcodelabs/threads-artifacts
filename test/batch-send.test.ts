@@ -4,7 +4,7 @@ import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createArtifactCommentsProvider, type CommentsProviderController } from '../src/artifactCommentsProvider';
 import { bodySha256 } from '../src/commentModel';
-import { createCommentStore } from '../src/commentStore';
+import { createCommentStore, type CommentRootHandle, type CommentStore } from '../src/commentStore';
 import { buildDesignManifest } from '../src/designArtifact';
 import type { ArtifactCommentsChange, ArtifactCommentsProvider } from '../src/geodeArtifactFeedbackV2';
 import type { ArtifactFeedbackRequest, ArtifactFeedbackTarget } from '../src/geodeArtifactFeedback';
@@ -62,8 +62,18 @@ async function makeArtifact(): Promise<string> {
 }
 
 /** One provider stack over `root`. Calling it again simulates a plugin reload (fresh store, provider and coordinator). */
-function makeStack(extra: { maxPromptLength?: number } = {}) {
-  const store = createCommentStore({ keys: { getKey: async () => KEY }, now: () => new Date(START_MS) });
+function makeStack(extra: { maxPromptLength?: number; failTransition?: (event: string) => boolean } = {}) {
+  const realStore = createCommentStore({ keys: { getKey: async () => KEY }, now: () => new Date(START_MS) });
+  const store: CommentStore = extra.failTransition
+    ? { async open(t) {
+        const handle = await realStore.open(t);
+        return new Proxy(handle, { get(obj, prop) {
+          const value = Reflect.get(obj, prop) as unknown;
+          if (prop === 'transition') return (items: readonly any[]) => (extra.failTransition!(items[0]?.event) ? Promise.resolve({ status: 'rejected', reason: 'failed', message: 'disk full' }) : (obj as any).transition(items));
+          return typeof value === 'function' ? (value as (...a: unknown[]) => unknown).bind(obj) : value;
+        } }) as CommentRootHandle;
+      } }
+    : realStore;
   let ctl!: CommentsProviderController;
   const coord = createSendCoordinator({ api: fake.api, ownerPluginId: 'threads-design', clock, onDeferredResult: result => { void ctl.handleDeferredResult(result); } });
   ctl = createArtifactCommentsProvider({
@@ -81,7 +91,7 @@ function makeStack(extra: { maxPromptLength?: number } = {}) {
   return { controller: ctl, coordinator: coord };
 }
 
-function useStack(extra: { maxPromptLength?: number } = {}) {
+function useStack(extra: { maxPromptLength?: number; failTransition?: (event: string) => boolean } = {}) {
   const stack = makeStack(extra);
   controller = stack.controller;
   coordinator = stack.coordinator;
@@ -547,7 +557,7 @@ describe('sendBatch: unqueue', () => {
     const member = await byId(1);
     ok(await provider.update(target, { id: cmtId(1), expectedVersion: member.version, change: { action: 'unqueue' } }, ctx()));
     const after = await byId(1);
-    await controller.handleDeferredResult({ selectionId: rid('a'), outcome: { status: 'sent' } });
+    await controller.handleDeferredResult({ selectionId: rid('a'), artifactKey: root, outcome: { status: 'sent' } });
     expect(await byId(1)).toEqual(after);
   });
 
@@ -579,12 +589,12 @@ describe('stale and unknown deferred results', () => {
     await pin(1);
     fake.threads.get('t1')!.isRunning = true;
     ok(await send([1]));
-    await controller.handleDeferredResult({ selectionId: selId(77), outcome: { status: 'sent' } });
+    await controller.handleDeferredResult({ selectionId: selId(77), artifactKey: root, outcome: { status: 'sent' } });
     expect(await byId(1)).toMatchObject({ status: 'pending' });
     await drain();
     const sentVersion = (await byId(1)).version;
-    await controller.handleDeferredResult({ selectionId: rid('a'), outcome: { status: 'sent' } });
-    await controller.handleDeferredResult({ selectionId: rid('a'), outcome: { status: 'rejected', reason: 'failed', message: 'late' } });
+    await controller.handleDeferredResult({ selectionId: rid('a'), artifactKey: root, outcome: { status: 'sent' } });
+    await controller.handleDeferredResult({ selectionId: rid('a'), artifactKey: root, outcome: { status: 'rejected', reason: 'failed', message: 'late' } });
     expect(await byId(1)).toMatchObject({ status: 'sent', version: sentVersion });
   });
 
@@ -594,7 +604,7 @@ describe('stale and unknown deferred results', () => {
     ok(await send([1]));
     const before = await fs.readFile(commentsFile(), 'utf8');
     controller.dispose();
-    await controller.handleDeferredResult({ selectionId: rid('a'), outcome: { status: 'sent' } });
+    await controller.handleDeferredResult({ selectionId: rid('a'), artifactKey: root, outcome: { status: 'sent' } });
     expect(await fs.readFile(commentsFile(), 'utf8')).toBe(before);
   });
 });
@@ -645,5 +655,44 @@ describe('crash and reload while pending', () => {
     await list();
     await settle();
     expect(await byId(1)).toMatchObject({ status: 'pending', send: { maybeSent: false } });
+  });
+});
+
+describe('fix pass: reporting, cancelled requests, input order', () => {
+  it('when the delivered write keeps failing, the report says the send went out but could not be recorded, and the comments are flagged maybe-sent, not pending', async () => {
+    controller.dispose(); coordinator.dispose();
+    useStack({ failTransition: event => event === 'delivered' });
+    await pin(1);
+    const report = ok<any>(await send([1]));
+    expect(report.outcome).toBe('sent');
+    expect(report.message).toMatch(/could not be (saved|recorded)/i);
+    expect(fake.sends).toHaveLength(1);
+    expect(await byId(1)).toMatchObject({ status: 'open', send: { maybeSent: true } });
+  });
+
+  it('a cancelled request id stays cancelled for the ledger window: a late retry is refused and sends nothing', async () => {
+    await pins(1);
+    fake.threads.get('t1')!.isRunning = true;
+    ok(await send([1], rid('a')));
+    const member = await byId(1);
+    ok(await provider.update(target, { id: cmtId(1), expectedVersion: member.version, change: { action: 'unqueue' } }, ctx()));
+    fake.threads.get('t1')!.isRunning = false;
+    expect(await send([1], rid('a'))).toMatchObject({ status: 'rejected', reason: 'conflict' });
+    expect(fake.sends).toHaveLength(0);
+  });
+
+  it('too many ids are refused as limit before the list is inspected, however junk it is', async () => {
+    const junk = Array.from({ length: 300_000 }, (_, index) => `x${index}`);
+    expect(await provider.sendBatch(target, { requestId: rid('a'), ids: junk, resend: false, anchorStates: {} } as never, ctx())).toMatchObject({ status: 'rejected', reason: 'limit' });
+  });
+
+  it('a retry after the user edited the text sends the new text and does not reuse the pinned prompt', async () => {
+    await pin(1);
+    fake.sendErrors.push(new FakeApiError('INVALID_ARGUMENT'));
+    expect(await send([1], rid('a'))).toMatchObject({ status: 'rejected' });
+    const member = await byId(1);
+    ok(await provider.update(target, { id: cmtId(1), expectedVersion: member.version, change: { text: 'Edited text' } }, ctx()));
+    ok(await send([1], rid('a')));
+    expect(fake.sends.at(-1)!.prompt).toContain('Edited text');
   });
 });
