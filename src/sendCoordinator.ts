@@ -47,7 +47,10 @@ export type SendOutcome =
 
 type Rejected = Extract<SendOutcome, { status: 'rejected' }>;
 
-export interface DeferredSendResult { readonly selectionId: string; readonly outcome: SendOutcome }
+/** A queued message ended without `submit` knowing: it was sent, failed, or the caller cancelled it (`cancel`). */
+export type DeferredOutcome = SendOutcome | { readonly status: 'cancelled' };
+
+export interface DeferredSendResult { readonly selectionId: string; readonly outcome: DeferredOutcome }
 
 export interface SendRequest {
   readonly selectionId: string;
@@ -74,6 +77,13 @@ export interface SendCoordinatorOptions {
 
 export interface SendCoordinator {
   submit(request: SendRequest): Promise<SendOutcome>;
+  /**
+   * Drops the held (queued) message `selectionId` for `artifactKey` and reports a `cancelled` deferred result.
+   * False when no such message is held, or when it is being sent right now (too late to take back).
+   */
+  cancel(artifactKey: string, selectionId: string): boolean;
+  /** True when the artifact's slot or an in-flight send belongs to a DIFFERENT request than `selectionId`: a submit now would be rejected busy. */
+  isBusy(artifactKey: string, selectionId: string): boolean;
   readonly pendingCount: number;
   dispose(): void;
 }
@@ -99,6 +109,8 @@ interface Slot extends SendRequest {
   settleTimer: unknown | null;
   ttlTimer: unknown | null;
   draining: boolean;
+  /** True while `threads.send` may be in progress for this slot: cancelling then would lie. */
+  sending: boolean;
 }
 
 type ThreadState = 'missing' | 'busy' | 'idle';
@@ -206,7 +218,7 @@ export function createSendCoordinator(options: SendCoordinatorOptions): SendCoor
     armPoll();
   }
 
-  function finish(slot: Slot, outcome: SendOutcome): void {
+  function finish(slot: Slot, outcome: DeferredOutcome): void {
     if (slots.get(slot.artifactKey) !== slot) return;
     if (slot.settleTimer !== null) { clock.clearTimeout(slot.settleTimer); slot.settleTimer = null; }
     if (slot.ttlTimer !== null) { clock.clearTimeout(slot.ttlTimer); slot.ttlTimer = null; }
@@ -223,7 +235,9 @@ export function createSendCoordinator(options: SendCoordinatorOptions): SendCoor
       if (disposed || slots.get(slot.artifactKey) !== slot) return;
       if (state === 'busy') return;
       if (state === 'missing') { finish(slot, rejected('unavailable', MESSAGES.gone)); return; }
+      slot.sending = true;
       const outcome = await attempt(slot);
+      slot.sending = false;
       if (disposed) return;
       if (outcome === BUSY) return;
       finish(slot, outcome);
@@ -231,11 +245,12 @@ export function createSendCoordinator(options: SendCoordinatorOptions): SendCoor
       // Transient host error while draining: keep the slot; the next poll retries.
     } finally {
       slot.draining = false;
+      slot.sending = false;
     }
   }
 
   function hold(request: SendRequest): SendOutcome {
-    const slot: Slot = { ...request, settleTimer: null, ttlTimer: null, draining: false };
+    const slot: Slot = { ...request, settleTimer: null, ttlTimer: null, draining: false, sending: false };
     slot.ttlTimer = clock.setTimeout(() => { slot.ttlTimer = null; finish(slot, rejected('unavailable', MESSAGES.expired)); }, ttlMs);
     slots.set(request.artifactKey, slot);
     watch();
@@ -283,8 +298,26 @@ export function createSendCoordinator(options: SendCoordinatorOptions): SendCoor
     return entry.promise;
   }
 
+  function cancel(artifactKey: string, selectionId: string): boolean {
+    if (disposed) return false;
+    const slot = slots.get(artifactKey);
+    if (!slot || slot.selectionId !== selectionId || slot.sending) return false;
+    finish(slot, { status: 'cancelled' });
+    return true;
+  }
+
+  function isBusy(artifactKey: string, selectionId: string): boolean {
+    if (disposed) return false;
+    const held = slots.get(artifactKey);
+    if (held) return held.selectionId !== selectionId;
+    const running = inFlight.get(artifactKey);
+    return running !== undefined && running.selectionId !== selectionId;
+  }
+
   return {
     submit,
+    cancel,
+    isBusy,
     get pendingCount() { return slots.size; },
     dispose() {
       disposed = true;

@@ -78,13 +78,18 @@ export function registerElementFeedback(options: ElementFeedbackOptions): Dispos
   }
   if (!options.basePath) return null;
 
+  // Set once Geode accepted the v2 handler; a queued batch can only finish after that.
+  let comments: ReturnType<typeof createArtifactCommentsProvider> | null = null;
   const coordinator = createSendCoordinator({
     api: options.api,
     ownerPluginId: DESIGN_PROVIDER_OWNER.pluginId,
     clock: options.clock,
-    onDeferredResult: ({ outcome }) => {
+    onDeferredResult: result => {
+      const { outcome } = result;
       if (outcome.status === 'sent') options.notify('Design: your queued comment was sent to the thread.');
       else if (outcome.status === 'rejected') options.notify(`Design: your queued comment could not be sent. ${outcome.message}`, true);
+      // A queued pinned batch also needs its comments marked sent, or back to open.
+      void comments?.handleDeferredResult(result).catch(error => log.warn('threads-design: could not record a queued send result', error));
     },
   });
   const plugin = options.plugin as GeodePluginSurface;
@@ -125,14 +130,13 @@ export function registerElementFeedback(options: ElementFeedbackOptions): Dispos
   };
 
   let registration: ArtifactFeedbackRegistration | null = null;
-  let comments: ReturnType<typeof createArtifactCommentsProvider> | null = null;
   let raced = false;
 
   if (negotiated === 2 && options.installKeys) {
     // The store is lazy and the provider stays inert until Geode accepts this handler (T12): nothing here reads
     // plugin data or writes comments.json before a v2 registration succeeded.
     const store = createCommentStore({ keys: options.installKeys, pluginVersion: options.pluginVersion ? `threads-design@${options.pluginVersion}` : undefined });
-    const candidate = createArtifactCommentsProvider({ api: options.api, vaultRoot, store, now: options.now, warn: baseDeps.warn });
+    const candidate = createArtifactCommentsProvider({ api: options.api, vaultRoot, store, now: options.now, warn: baseDeps.warn, coordinator, boundarySecret: baseDeps.boundarySecret, escalation: baseDeps.escalation });
     const v1 = createArtifactFeedbackHandler({ ...baseDeps, protectedSelectionIds: (root, artifactId) => candidate.protectedSelectionIds(root, artifactId) });
     const v2: ArtifactFeedbackHandlerV2 = { contractVersion: 2, canHandle: v1.canHandle, submit: v1.submit, comments: candidate.provider };
     const attempt = register(v2);
