@@ -35,7 +35,7 @@ export interface FsOps {
 const nativeRealpath = (target: string): Promise<string> =>
   new Promise((resolve, reject) => nodeFs.realpath.native(target, (error, resolved) => (error ? reject(error) : resolve(resolved))));
 
-const defaultOps: FsOps = { lstat: fs.lstat, mkdir: fs.mkdir, open: fs.open, readdir: fs.readdir, rename: fs.rename, rm: fs.rm, realpath: nativeRealpath };
+export const defaultOps: FsOps = { lstat: fs.lstat, mkdir: fs.mkdir, open: fs.open, readdir: fs.readdir, rename: fs.rename, rm: fs.rm, realpath: nativeRealpath };
 
 export interface SelectionFilesInput {
   /** Artifact root as resolved by intake; resolved again here. */
@@ -55,13 +55,13 @@ export interface SelectionFilesResult {
   readonly replay: boolean;
 }
 
-const fileError = (message: string, cause?: unknown): SelectionFileError => {
+export const fileError = (message: string, cause?: unknown): SelectionFileError => {
   const error = new SelectionFileError(message);
   if (cause !== undefined) (error as { cause?: unknown }).cause = cause;
   return error;
 };
 
-async function lstatOrNull(ops: FsOps, target: string) {
+export async function lstatOrNull(ops: FsOps, target: string) {
   try {
     return await ops.lstat(target);
   } catch (error) {
@@ -71,7 +71,7 @@ async function lstatOrNull(ops: FsOps, target: string) {
 }
 
 /** Ensures `parent/name` is a real directory (not a symlink) whose native realpath equals its literal path. */
-async function ensureRealDirectory(ops: FsOps, parent: string, name: string): Promise<string> {
+export async function ensureRealDirectory(ops: FsOps, parent: string, name: string): Promise<string> {
   const dir = path.join(parent, name);
   let stat = await lstatOrNull(ops, dir);
   if (stat === null) {
@@ -147,6 +147,11 @@ export interface PruneInput {
   readonly keep: number;
   /** An id that must survive regardless of age (the one just written). */
   readonly protectId?: string;
+  /**
+   * Ids that are exempt from retention entirely (every pinned comment's selection id). They are not
+   * ranked, so they do not use up any of the `keep` slots; only the unreferenced ids compete for those.
+   */
+  readonly protectIds?: Iterable<string>;
 }
 
 /**
@@ -190,7 +195,9 @@ export async function pruneSelections(input: PruneInput, ops: FsOps = defaultOps
       groups.set(match![1], group);
     }
 
-    const newestFirst = [...groups.entries()].sort((a, b) => b[1].newest - a[1].newest || (a[0] < b[0] ? 1 : -1));
+    const exempt = new Set<string>();
+    for (const id of input.protectIds ?? []) if (typeof id === 'string' && SELECTION_ID_PATTERN.test(id)) exempt.add(id);
+    const newestFirst = [...groups.entries()].filter(([id]) => !exempt.has(id)).sort((a, b) => b[1].newest - a[1].newest || (a[0] < b[0] ? 1 : -1));
     const keepIds = new Set(newestFirst.slice(0, Math.max(0, input.keep)).map(([id]) => id));
     if (input.protectId) keepIds.add(input.protectId);
     const doomed = [...stale, ...newestFirst.filter(([id]) => !keepIds.has(id)).flatMap(([, group]) => group.files)];
