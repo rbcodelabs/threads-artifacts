@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { ARTIFACT_FEEDBACK_SUBMIT_TIMEOUT_MS } from '../src/geodeArtifactFeedback';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { ATTEMPT_TIMEOUT_MS, createSendCoordinator, idempotencyKeyFor, PENDING_TTL_MS, type DeferredSendResult } from '../src/sendCoordinator';
+import { THREAD_GONE_MESSAGE } from '../src/threadGone';
 import { createFakeApi, FakeApiError } from './helpers/fakeApi';
 import { createFakeClock } from './helpers/fakeClock';
 
@@ -192,7 +193,7 @@ describe('failure mapping', () => {
   const cases: [string, 'busy' | 'invalid' | 'unavailable' | 'failed', RegExp][] = [
     ['IDEMPOTENCY_CONFLICT', 'failed', /clash|earlier/i],
     ['INVALID_ARGUMENT', 'invalid', /too long|accept/i],
-    ['THREAD_NOT_FOUND', 'unavailable', /deleted|no longer/i],
+    ['THREAD_NOT_FOUND', 'unavailable', /archived or deleted/i],
     ['RUN_FAILED', 'failed', /start|thread/i],
     ['PLUGIN_UNAVAILABLE', 'unavailable', /not available/i],
     ['SOMETHING_ELSE', 'failed', /could not send/i],
@@ -207,10 +208,10 @@ describe('failure mapping', () => {
     expect(coordinator.pendingCount).toBe(0);
   });
 
-  it('rejects when the thread no longer exists', async () => {
+  it('rejects with the archived-or-deleted message when the thread no longer exists (archived threads are deleted by the host)', async () => {
     const coordinator = make();
     fake.threads.delete('t1');
-    expect(await coordinator.submit(req('sel_a'))).toMatchObject({ status: 'rejected', reason: 'unavailable' });
+    expect(await coordinator.submit(req('sel_a'))).toMatchObject({ status: 'rejected', reason: 'unavailable', message: THREAD_GONE_MESSAGE });
   });
 
   it('maps a thrown get() to unavailable without leaving a slot', async () => {
@@ -233,14 +234,14 @@ describe('failure mapping', () => {
     expect(await coordinator.submit(req('sel_b'))).toEqual({ status: 'sent' });
   });
 
-  it('drops a queued comment when its thread is removed', async () => {
+  it('drops a queued comment with the archived-or-deleted message when its thread is archived (thread.removed)', async () => {
     const coordinator = make();
     fake.threads.get('t1')!.isRunning = true;
     await coordinator.submit(req('sel_a'));
     fake.emit({ kind: 'thread.removed', threadId: 't1' });
     await clock.flush();
     expect(coordinator.pendingCount).toBe(0);
-    expect(deferred[0]).toMatchObject({ selectionId: 'sel_a', artifactKey: 'art-1', outcome: { status: 'rejected', reason: 'unavailable' } });
+    expect(deferred[0]).toMatchObject({ selectionId: 'sel_a', artifactKey: 'art-1', outcome: { status: 'rejected', reason: 'unavailable', message: THREAD_GONE_MESSAGE } });
   });
 });
 

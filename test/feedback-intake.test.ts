@@ -1,3 +1,4 @@
+import { THREAD_GONE_MESSAGE } from '../src/threadGone';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -108,9 +109,10 @@ describe('resolveFeedbackTarget', () => {
     expect(await resolve(target(root))).toMatchObject({ ok: false, reason: 'unsupported' });
   });
 
-  it('reports a deleted thread as unavailable', async () => {
+  it('reports a deleted or archived thread (threads.get returns null) as unavailable with the archived-or-deleted wording', async () => {
     const root = await makeArtifact();
-    expect(await resolve(target(root))).toMatchObject({ ok: false, reason: 'unavailable', message: expect.stringContaining('no longer exists') });
+    expect(await resolve(target(root))).toMatchObject({ ok: false, reason: 'unavailable', message: THREAD_GONE_MESSAGE });
+    expect(THREAD_GONE_MESSAGE).toBe('The thread that created this design was archived or deleted, so the comment could not be sent.');
   });
 
   it('requires the thread to still own a design-static artifact with this id', async () => {

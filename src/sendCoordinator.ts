@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { AgentThreadsApiV1, PublicThreadEvent } from './contracts';
 import { ARTIFACT_FEEDBACK_SUBMIT_TIMEOUT_MS } from './geodeArtifactFeedback';
+import { THREAD_GONE_MESSAGE } from './threadGone';
 
 /**
  * Delivers a finished prompt to a thread through `threads.send` v1 and copes with a busy thread.
@@ -29,7 +30,7 @@ export const BUSY_MESSAGE = 'A comment is already waiting for the agent. It will
 const MESSAGES = {
   conflict: 'This comment clashes with an earlier send. Press Retry; if it keeps failing, pick the element again.',
   invalid: 'Agent Threads would not accept this message (it may be too long). Shorten the comment and try again.',
-  gone: 'The thread was deleted, so the comment could not be sent.',
+  gone: THREAD_GONE_MESSAGE,
   runFailed: 'The agent could not start this message. Check the thread, then try again.',
   unavailable: 'Agent Threads is not available right now. Try again in a moment.',
   generic: 'Could not send to the thread. Try again.',
