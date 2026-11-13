@@ -75,7 +75,8 @@ export function neutralizeEscalation(text: string, extraKeywords: readonly strin
   return out;
 }
 
-const neutralizeUrls = (text: string): string => text.replace(/\b(https?):\/\//gi, `$1:${ZERO_WIDTH_SPACE}//`);
+// A scheme right after an escaped invisible character (`\\u200bhttp://`) has no word boundary, so the escape counts as one.
+const neutralizeUrls = (text: string): string => text.replace(/(?:\b|(?<=\\u[0-9a-f]{4})|(?<=\\u\{[0-9a-f]+\}))(https?):\/\//gi, `$1:${ZERO_WIDTH_SPACE}//`);
 /** Slash-commands the host or agent might act on: any whitespace-delimited word that starts with a slash. */
 const neutralizeSlashWords = (text: string): string => text.replace(/(^|\s)\/(?=\S)/g, `$1/${ZERO_WIDTH_SPACE}`);
 

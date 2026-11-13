@@ -47,6 +47,8 @@ export interface StoredSend {
   readonly lastMessage: string | null;
   /** Plugin-private: which batch request last put this comment in `pending` (P2b). */
   readonly lastBatchRequestId: string | null;
+  /** Plugin-private: SHA-256 (hex) of the exact prompt that request put this comment into `pending` with. Absent until a batch was issued. */
+  readonly lastBatchPromptSha?: string;
 }
 
 /** What `comments.json` holds per comment: every ArtifactComment field except `provenance` (derived at load), plus `sig`. */
@@ -152,6 +154,7 @@ export function deriveCommentId(selectionId: unknown): string | null {
 }
 
 export const isCommentId = (value: unknown): value is string => typeof value === 'string' && ARTIFACT_COMMENT_ID_PATTERN.test(value);
+export const isPromptSha = (value: unknown): value is string => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
 export const isRequestId = (value: unknown): value is string => typeof value === 'string' && ARTIFACT_COMMENTS_REQUEST_ID_PATTERN.test(value);
 
 type Signable = Pick<StoredComment, 'id' | 'selectionId' | 'text' | 'createdAt'> & { readonly anchor: Pick<ArtifactCommentAnchor, 'route' | 'selector'> };
@@ -208,6 +211,10 @@ export interface EventContext {
   readonly requestId?: string | null;
   readonly message?: string | null;
   readonly text?: string;
+  /** batch-issued / batch-resend: hash of the prompt being sent. */
+  readonly promptSha?: string | null;
+  /** send-failed: the message may nevertheless have reached the thread (a timeout). */
+  readonly maybeSent?: boolean;
 }
 
 /** Applies one event. Returns null when the transition is forbidden. `remove` is a store-level operation and returns null here. */
@@ -225,14 +232,14 @@ export function applyEvent(comment: StoredComment, event: StatusEvent, ctx: Even
       break;
     case 'batch-issued':
     case 'batch-resend':
-      send = { ...send, attempts: send.attempts + 1, lastBatchRequestId: isRequestId(ctx.requestId) ? ctx.requestId : null };
+      send = { ...send, attempts: send.attempts + 1, lastBatchRequestId: isRequestId(ctx.requestId) ? ctx.requestId : null, ...(isPromptSha(ctx.promptSha) ? { lastBatchPromptSha: ctx.promptSha } : {}) };
       break;
     case 'delivered':
       sentAt = ctx.now;
       send = { ...send, lastOutcome: 'sent', maybeSent: false, lastMessage: message };
       break;
     case 'send-failed':
-      send = { ...send, lastOutcome: 'failed', lastMessage: message };
+      send = { ...send, lastOutcome: 'failed', lastMessage: message, maybeSent: ctx.maybeSent === true ? true : send.maybeSent };
       break;
     case 'expired':
       send = { ...send, lastOutcome: 'failed', lastMessage: message };
@@ -397,6 +404,7 @@ export function validateStoredComment(raw: unknown): CommentValidation {
     const maybeSent = own(sendRaw, 'maybeSent');
     const message = own(sendRaw, 'lastMessage');
     const batch = own(sendRaw, 'lastBatchRequestId');
+    const promptSha = own(sendRaw, 'lastBatchPromptSha');
     let touched = false;
     const pick = <T,>(ok: boolean, value: T, fallback: T): T => { if (!ok) touched = true; return ok ? value : fallback; };
     send = {
@@ -405,6 +413,7 @@ export function validateStoredComment(raw: unknown): CommentValidation {
       maybeSent: pick(typeof maybeSent === 'boolean', maybeSent as boolean, false),
       lastMessage: pick(message === null || typeof message === 'string', typeof message === 'string' ? truncate(message, ARTIFACT_COMMENTS_CAPS.maxMessageUnits) : null, null),
       lastBatchRequestId: pick(batch === null || batch === undefined || isRequestId(batch), isRequestId(batch) ? batch : null, null),
+      ...(isPromptSha(promptSha) ? { lastBatchPromptSha: promptSha } : {}),
     };
     if (touched) clamped.push('send');
   } else {

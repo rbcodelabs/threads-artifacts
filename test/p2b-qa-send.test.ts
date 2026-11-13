@@ -105,7 +105,6 @@ function makeStack(extra: StackOptions = {}) {
     store,
     now: () => nowMs,
     coordinator: coord,
-    boundarySecret: extra.boundarySecret ?? 'qa-batch-secret',
     escalation: extra.escalation ?? (() => ({ keywords: [], known: true })),
     maxPromptLength: extra.maxPromptLength,
     warn: (...args: unknown[]) => { warnings.push(args); },

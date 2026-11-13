@@ -53,7 +53,7 @@ const MESSAGES = {
   sendingNow: 'This comment is being sent right now, so it cannot be taken back.',
   cancelled: 'This send was cancelled. Choose the comments and send again.',
   settling: 'The previous attempt is still being recorded. Try again in a moment.',
-  maybeSentRetry: 'Design restarted while this was sending, so it may already be in the thread. Send it again only if you want a second message.',
+  maybeSentRetry: 'These comments changed since an earlier send that may already be in the thread. Send them again only if you want a second message.',
   notRecorded: 'The message went out, but its status could not be saved, so these comments are marked as maybe sent.',
   changedWhileSending: 'These comments changed while sending, so nothing was sent. Try again.',
   promptUnsafe: 'These comments could not be made safe to send. Shorten them and try again.',
@@ -72,8 +72,6 @@ export interface CommentsProviderDeps {
   readonly store: CommentStore;
   /** Delivers batches through the one pending slot per artifact. Without it `sendBatch` answers `unavailable`. */
   readonly coordinator?: SendCoordinator;
-  /** Per-session secret for the batch boundary token. Never page-visible. */
-  readonly boundarySecret?: string;
   /** The host's escalation keyword(s); `known: false` when the setting could not be read. */
   readonly escalation?: () => { readonly keywords: readonly string[]; readonly known: boolean };
   /** Override of the prompt size cap (tests). */
@@ -145,7 +143,8 @@ interface BatchEntry {
   readonly requestId: string;
   /** Canonical form of what was asked for: a requestId reused for something else is a conflict. */
   readonly requested: string;
-  readonly at: number;
+  /** Start of the ledger window: creation, then reset when the request is cancelled so the tombstone lasts the full window. */
+  at: number;
   state: EntryState;
   promise: Promise<ArtifactCommentsResult<BatchSendReport>> | null;
   /** The accepted outcome, returned verbatim on a retry. */
@@ -354,8 +353,8 @@ export function createArtifactCommentsProvider(deps: CommentsProviderDeps): Comm
    * still get their status. A member whose write keeps failing is moved to `fallback` so nothing stays `pending`
    * after the send is over. Returns true when every write that was needed worked the first way.
    */
-  async function recordMembers(handle: CommentRootHandle, ids: readonly string[], event: Transition['event'], requestId: string, message: string, fallback: { readonly event: Transition['event']; readonly message: string } | null): Promise<boolean> {
-    const item = (id: string, which: Transition['event'], text: string): Transition => ({ id, event: which, ...(which === 'reload-recovered' ? {} : { requestId }), message: text });
+  async function recordMembers(handle: CommentRootHandle, ids: readonly string[], event: Transition['event'], requestId: string, message: string, fallback: { readonly event: Transition['event']; readonly message: string } | null, maybeSent = false): Promise<boolean> {
+    const item = (id: string, which: Transition['event'], text: string): Transition => ({ id, event: which, ...(which === 'reload-recovered' ? {} : { requestId }), message: text, ...(which === event && event === 'send-failed' && maybeSent ? { maybeSent: true } : {}) });
     if ((await writeWithRetry(() => handle.transition(ids.map((id) => item(id, event, message))))).status === 'ok') return true;
     for (const id of ids) {
       const written = await writeWithRetry(() => handle.transition([item(id, event, message)]));
@@ -397,7 +396,7 @@ export function createArtifactCommentsProvider(deps: CommentsProviderDeps): Comm
     entry.state = outcome.status === 'sent' ? 'done' : outcome.status === 'cancelled' ? 'cancelled' : 'failed';
     // The old "queued" answer is wrong from this moment on, whatever the writes below take.
     if (outcome.status !== 'sent') entry.report = null;
-    if (outcome.status === 'cancelled') entry.plan = null;
+    if (outcome.status === 'cancelled') { entry.plan = null; entry.at = now(); }
     entry.settling = (async () => {
       try {
         const handle = await handleFor(entry.root, entry.artifactId);
@@ -449,15 +448,6 @@ export function createArtifactCommentsProvider(deps: CommentsProviderDeps): Comm
     if (sendable.length === 0) return done(report());
     sendable.sort((a, b) => a.ordinal - b.ordinal);
 
-    // After a restart the ledger is empty and the rebuilt prompt gets a new boundary token, so the host could not tell a
-    // retry of this request from a new message. A comment that may already have gone out under this very request id
-    // needs the user's decision (a new request), not a silent second send.
-    const unsure = sendable.filter((comment) => comment.status === 'open' && comment.send.maybeSent).map((comment) => comment.id);
-    if (unsure.length > 0) {
-      const marks = await handle.lastBatchRequestIds(unsure);
-      if ([...marks.values()].some((mark) => mark === requestId)) return fail('conflict', MESSAGES.maybeSentRetry);
-    }
-
     // Another request holds the one slot: say so before building or writing anything.
     if (coordinator.isBusy(intake.root, requestId)) return fail('busy', BUSY_MESSAGE);
 
@@ -492,7 +482,7 @@ export function createArtifactCommentsProvider(deps: CommentsProviderDeps): Comm
       }));
       let built;
       try {
-        built = buildBatchPrompt({ items, artifactTitle: intake.title, requestId, boundarySecret: deps.boundarySecret as string, artifactRoot: intake.root, escalationKeywords: escalation.keywords, conservativeKeywords: !escalation.known, maxLength: deps.maxPromptLength });
+        built = buildBatchPrompt({ items, artifactTitle: intake.title, requestId, boundarySecret: await handle.batchSecret(), artifactRoot: intake.root, escalationKeywords: escalation.keywords, conservativeKeywords: !escalation.known, maxLength: deps.maxPromptLength });
       } catch (error) {
         warn('threads-design: could not build the batch prompt', error);
         return fail('failed', MESSAGES.promptUnsafe);
@@ -508,11 +498,24 @@ export function createArtifactCommentsProvider(deps: CommentsProviderDeps): Comm
     }
     if (signal?.aborted) return fail('unavailable', MESSAGES.aborted);
 
+    // A comment whose earlier attempt under THIS request id may have reached the thread (a timeout, a reload) may only
+    // be sent again if the message is byte-identical: it then carries the same idempotency key and the host dedupes it.
+    // Anything else (an edited comment, a different set) would be a second message, so the user decides, with a new request.
+    const promptSha = createHash('sha256').update(plan.prompt).digest('hex');
+    const uncertain = plan.includedIds.filter((id) => known.get(id)?.send.maybeSent === true);
+    if (uncertain.length > 0) {
+      const marks = await handle.batchMarks(uncertain);
+      for (const id of uncertain) {
+        const mark = marks.get(id);
+        if (mark?.requestId === requestId && mark.promptSha !== promptSha) return fail('conflict', MESSAGES.maybeSentRetry);
+      }
+    }
+
     // Write-ahead (one store write): after this, a crash leaves `pending` comments that the next start recovers.
     // The versions seen in the snapshot are required, so an edit that landed since then cannot be marked sent unsent.
     entry.memberIds = plan.includedIds;
     entry.state = 'sending';
-    const written = await handle.transition(plan.includedIds.map((id) => ({ id, event: known.get(id)?.status === 'sent' ? ('batch-resend' as const) : ('batch-issued' as const), requestId, expectedVersion: known.get(id)?.version })));
+    const written = await handle.transition(plan.includedIds.map((id) => ({ id, event: known.get(id)?.status === 'sent' ? ('batch-resend' as const) : ('batch-issued' as const), requestId, promptSha, expectedVersion: known.get(id)?.version })));
     if (written.status !== 'ok') {
       entry.state = 'failed';
       entry.memberIds = [];
@@ -541,7 +544,7 @@ export function createArtifactCommentsProvider(deps: CommentsProviderDeps): Comm
       return done(report());
     }
     entry.state = 'failed';
-    await recordMembers(handle, plan.includedIds, 'send-failed', requestId, outcome.message, { event: 'expired', message: outcome.message });
+    await recordMembers(handle, plan.includedIds, 'send-failed', requestId, outcome.message, { event: 'expired', message: outcome.message }, outcome.maybeSent === true);
     return fail(outcome.reason, outcome.message);
   }
 
@@ -700,7 +703,7 @@ export function createArtifactCommentsProvider(deps: CommentsProviderDeps): Comm
     sendBatch(target, input, ctx) {
       const parsed = parseSendInput(input);
       if (!parsed.ok) return Promise.resolve(parsed.result);
-      if (!deps.coordinator || !deps.boundarySecret) return Promise.resolve(fail('unavailable', MESSAGES.sendUnavailable));
+      if (!deps.coordinator) return Promise.resolve(fail('unavailable', MESSAGES.sendUnavailable));
       return run(target, async (handle, intake) => {
         pruneLedger();
         const key = `${intake.root}\0${parsed.requestId}`;

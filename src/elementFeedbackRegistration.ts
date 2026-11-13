@@ -136,7 +136,7 @@ export function registerElementFeedback(options: ElementFeedbackOptions): Dispos
     // The store is lazy and the provider stays inert until Geode accepts this handler (T12): nothing here reads
     // plugin data or writes comments.json before a v2 registration succeeded.
     const store = createCommentStore({ keys: options.installKeys, pluginVersion: options.pluginVersion ? `threads-design@${options.pluginVersion}` : undefined });
-    const candidate = createArtifactCommentsProvider({ api: options.api, vaultRoot, store, now: options.now, warn: baseDeps.warn, coordinator, boundarySecret: baseDeps.boundarySecret, escalation: baseDeps.escalation });
+    const candidate = createArtifactCommentsProvider({ api: options.api, vaultRoot, store, now: options.now, warn: baseDeps.warn, coordinator, escalation: baseDeps.escalation });
     const v1 = createArtifactFeedbackHandler({ ...baseDeps, protectedSelectionIds: (root, artifactId) => candidate.protectedSelectionIds(root, artifactId) });
     const v2: ArtifactFeedbackHandlerV2 = { contractVersion: 2, canHandle: v1.canHandle, submit: v1.submit, comments: candidate.provider };
     const attempt = register(v2);

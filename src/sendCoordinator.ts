@@ -43,7 +43,13 @@ const MESSAGES = {
 export type SendOutcome =
   | { readonly status: 'sent' }
   | { readonly status: 'queued' }
-  | { readonly status: 'rejected'; readonly reason: 'busy' | 'invalid' | 'unavailable' | 'failed'; readonly message: string };
+  | {
+      readonly status: 'rejected';
+      readonly reason: 'busy' | 'invalid' | 'unavailable' | 'failed';
+      readonly message: string;
+      /** Present (true) only when the message may nevertheless have reached the thread: a timeout, or a reload mid-send. */
+      readonly maybeSent?: boolean;
+    };
 
 type Rejected = Extract<SendOutcome, { status: 'rejected' }>;
 
@@ -97,6 +103,7 @@ export const idempotencyKeyFor = (threadId: string, prompt: string): string =>
   `design:${threadId}:${createHash('sha256').update(prompt).digest('hex').slice(0, 32)}`;
 
 const rejected = (reason: Rejected['reason'], message: string): Rejected => ({ status: 'rejected', reason, message });
+const uncertain = (reason: Rejected['reason'], message: string): Rejected => ({ status: 'rejected', reason, message, maybeSent: true });
 const errorCode = (error: unknown): string | undefined => (typeof error === 'object' && error !== null ? (error as { code?: string }).code : undefined);
 
 function mapSendError(error: unknown): Rejected {
@@ -280,7 +287,7 @@ export function createSendCoordinator(options: SendCoordinatorOptions): SendCoor
       if (state === 'busy') return hold(request);
       const outcome = await attempt(request, issued);
       // Contract item 9: once the send was issued it may have reached the host, so do not claim it failed.
-      if (disposed) return rejected('unavailable', issued.value ? MESSAGES.statusUnknown : MESSAGES.disposed);
+      if (disposed) return issued.value ? uncertain('unavailable', MESSAGES.statusUnknown) : rejected('unavailable', MESSAGES.disposed);
       if (outcome === BUSY && abandoned.value) return rejected('failed', MESSAGES.timedOut);
       return outcome === BUSY ? hold(request) : outcome;
     } catch (error) {
@@ -290,7 +297,7 @@ export function createSendCoordinator(options: SendCoordinatorOptions): SendCoor
 
   function withTimeout(promise: Promise<SendOutcome>, abandoned: { value: boolean }): Promise<SendOutcome> {
     return new Promise(resolve => {
-      const timer = clock.setTimeout(() => { abandoned.value = true; resolve(rejected('failed', MESSAGES.timedOut)); }, attemptTimeoutMs);
+      const timer = clock.setTimeout(() => { abandoned.value = true; resolve(uncertain('failed', MESSAGES.timedOut)); }, attemptTimeoutMs);
       promise.then(outcome => { clock.clearTimeout(timer); resolve(outcome); }, error => { clock.clearTimeout(timer); resolve(mapSendError(error)); });
     });
   }

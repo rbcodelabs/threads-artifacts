@@ -1,5 +1,5 @@
 import { constants as fsConstants } from 'node:fs';
-import { randomBytes } from 'node:crypto';
+import { createHmac, randomBytes } from 'node:crypto';
 import * as path from 'node:path';
 import {
   applyEvent,
@@ -9,6 +9,7 @@ import {
   canonicalJson,
   createStoredComment,
   isCommentId,
+  isPromptSha,
   isRequestId,
   MAX_COMMENTS,
   MAX_READ_BYTES,
@@ -101,6 +102,10 @@ export interface SystemTransition {
   readonly message?: string;
   /** When set, the whole call is rejected `conflict` unless the comment is still at this version (the write-ahead of a send). */
   readonly expectedVersion?: number;
+  /** batch-issued / batch-resend: SHA-256 hex of the prompt about to be sent (kept privately, never in the public comment). */
+  readonly promptSha?: string;
+  /** send-failed: the message may nevertheless have reached the thread. */
+  readonly maybeSent?: boolean;
 }
 
 export interface CommentRootHandle {
@@ -114,8 +119,13 @@ export interface CommentRootHandle {
   adopt(ids: readonly string[]): Promise<ArtifactCommentsResult<{ readonly adopted: readonly string[] }>>;
   /** Plugin-raised transitions for the send flow (P2b), applied atomically: all or nothing. */
   transition(items: readonly SystemTransition[]): Promise<ArtifactCommentsResult<{ readonly comments: readonly ArtifactComment[]; readonly stale: readonly string[] }>>;
-  /** The stored `lastBatchRequestId` of each comment (null when none). Internal: the public comment shape does not carry it. */
-  lastBatchRequestIds(ids: readonly string[]): Promise<ReadonlyMap<string, string | null>>;
+  /** Which batch request last issued each comment and the hash of its prompt (null when none). Internal: the public comment shape does not carry them. */
+  batchMarks(ids: readonly string[]): Promise<ReadonlyMap<string, { readonly requestId: string | null; readonly promptSha: string | null }>>;
+  /**
+   * The secret the batch boundary token is derived from: an HMAC of a fixed label under the install key. Stable across
+   * reloads (so one request id builds one prompt), never the key itself, and never handed to Geode or the page.
+   */
+  batchSecret(): Promise<string>;
   /** Selection ids of every stored comment: pass to `pruneSelections` as `protectIds`. */
   protectedSelectionIds(): Promise<string[]>;
   /** At most 8 live listeners; null at the cap. A single stat poll runs while at least one exists. */
@@ -645,13 +655,17 @@ export function createCommentStore(options: CommentStoreOptions): CommentStore {
       });
     }
 
-    lastBatchRequestIds(ids: readonly string[]): Promise<ReadonlyMap<string, string | null>> {
+    batchMarks(ids: readonly string[]): Promise<ReadonlyMap<string, { readonly requestId: string | null; readonly promptSha: string | null }>> {
       return this.locked(async () => {
         const wanted = new Set(ids);
-        const out = new Map<string, string | null>();
-        for (const c of this.state.file.comments) if (wanted.has(c.id)) out.set(c.id, c.send.lastBatchRequestId ?? null);
+        const out = new Map<string, { readonly requestId: string | null; readonly promptSha: string | null }>();
+        for (const c of this.state.file.comments) if (wanted.has(c.id)) out.set(c.id, { requestId: c.send.lastBatchRequestId ?? null, promptSha: c.send.lastBatchPromptSha ?? null });
         return out;
       });
+    }
+
+    async batchSecret(): Promise<string> {
+      return createHmac('sha256', await this.ensureKey()).update('threads-design/batch-boundary/v1').digest('hex');
     }
 
     protectedSelectionIds(): Promise<string[]> {
@@ -905,6 +919,8 @@ export function createCommentStore(options: CommentStoreOptions): CommentStore {
         if (item.requestId !== undefined && !isRequestId(item.requestId)) return rejected('invalid', 'Those changes are not valid.');
         if (item.message !== undefined && typeof item.message !== 'string') return rejected('invalid', 'Those changes are not valid.');
         if (item.expectedVersion !== undefined && !isVersion(item.expectedVersion)) return rejected('invalid', 'Those changes are not valid.');
+        if (item.promptSha !== undefined && !isPromptSha(item.promptSha)) return rejected('invalid', 'Those changes are not valid.');
+        if (item.maybeSent !== undefined && typeof item.maybeSent !== 'boolean') return rejected('invalid', 'Those changes are not valid.');
         seen.add(item.id);
       }
       return this.locked(async () => {
@@ -924,7 +940,7 @@ export function createCommentStore(options: CommentStoreOptions): CommentStore {
             stale.push(item.id);
             continue;
           }
-          const next = applyEvent(found, item.event, { now: at, requestId: item.requestId ?? null, message: item.message ?? null });
+          const next = applyEvent(found, item.event, { now: at, requestId: item.requestId ?? null, message: item.message ?? null, promptSha: item.promptSha ?? null, maybeSent: item.maybeSent });
           if (next === null) return rejected('invalid-transition', 'That change is not allowed for a comment in this state.');
           comments = this.replace(comments, next);
           appliedIds.push(item.id);
