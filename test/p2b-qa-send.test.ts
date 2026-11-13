@@ -1909,3 +1909,22 @@ describe('review fixes: store-level validation and the uncertain queued path', (
     expect(await byId(2)).toMatchObject({ status: 'open', send: { lastOutcome: 'failed', maybeSent: false } });
   });
 });
+
+
+describe('review fixes: a send that hangs forever', () => {
+  it('after the timeout the user clicking Send again (a NEW request id) works, the stuck request id keeps refusing an edited prompt and accepts the identical one', async () => {
+    await pins(1);
+    fake.state.hangSends = 1;
+    const first = send([1], rid('a'));
+    await settle();
+    await clock.advance(ATTEMPT_TIMEOUT_MS + 10);
+    expect(await first).toMatchObject({ status: 'rejected', reason: 'failed' });
+    expect(await byId(1)).toMatchObject({ status: 'open', send: { maybeSent: true } });
+    const c = await byId(1);
+    ok(await provider.update(target, { id: cmtId(1), expectedVersion: c.version, change: { text: 'Edited while the host hangs' } }, ctx()));
+    expect(await send([1], rid('a'))).toMatchObject({ status: 'rejected' });
+    expect(fake.sends).toHaveLength(0);
+    expect(ok<any>(await send([1], rid('b'))).outcome, 'a new request id is the user choosing a second message').toBe('sent');
+    expect(fake.sends).toHaveLength(1);
+  });
+});
