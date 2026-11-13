@@ -667,16 +667,34 @@ describe('write-ahead is one store write for the whole batch', () => {
 // =============================================================================================
 
 describe('queued results and the retry window', () => {
-  it('BUG: a queued request that fails later (thread removed) and is retried while the failure is still being recorded answers with the stale queued report', async () => {
+  const slowFailureWrite = (items: readonly any[], real: any) => (items[0]?.event === 'send-failed' ? new Promise(resolve => setTimeout(resolve, 150)).then(() => real.transition(items)) : undefined);
+
+  it('a queued request that fails later and is retried while the failure is still being recorded is asked to wait (busy), never answered with the stale queued report', async () => {
     controller.dispose(); coordinator.dispose();
-    useStack({ hooks: { transition: items => (items[0]?.event === 'send-failed' ? new Promise(resolve => setTimeout(resolve, 150)).then(() => undefined as never) : undefined) } });
+    useStack({ hooks: { transition: slowFailureWrite } });
     await pins(1);
     running(true);
     ok(await send([1], rid('a')));
     fake.emit({ kind: 'thread.removed', threadId: 't1' });
     const retry = await send([1], rid('a'));
-    const outcome = retry.status === 'ok' ? (retry.value as any).outcome : retry.status;
-    expect(outcome, 'a failed queued send was reported as queued again').not.toBe('queued');
+    expect(retry, JSON.stringify(retry)).toMatchObject({ status: 'rejected', reason: 'busy' });
+    expect(fake.sends).toHaveLength(0);
+  });
+
+  it('after the failure of a queued send has been recorded, a retry of the same request id sends once with the pinned prompt (it is not answered with the old queued report)', async () => {
+    controller.dispose(); coordinator.dispose();
+    useStack({ hooks: { transition: slowFailureWrite } });
+    await pins(1);
+    running(true);
+    ok(await send([1], rid('a')));
+    fake.emit({ kind: 'thread.removed', threadId: 't1' });
+    await until(async () => (await byId(1)).status === 'open', 3000);
+    expect(await byId(1)).toMatchObject({ status: 'open', send: { lastOutcome: 'failed' } });
+    running(false);
+    fake.addThread('t1', { artifacts: [{ providerId: 'agent-threads.design', kind: 'design-static', schemaVersion: 2, id: 'design-t1', title: 'Landing', data: {}, storageRoot: root }] });
+    const retry = ok<any>(await send([1], rid('a')));
+    expect(retry.outcome).toBe('sent');
+    expect(fake.sends).toHaveLength(1);
   });
 
   it('a request that already settled as sent answers sent on retry, never queued', async () => {
