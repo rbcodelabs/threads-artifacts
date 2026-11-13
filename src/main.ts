@@ -20,7 +20,7 @@ const REQUIRED_CAPABILITIES = [
 
 type Disposable = { dispose(): void };
 
-export default class ThreadsDesignPlugin extends Plugin {
+export default class ThreadsArtifactsPlugin extends Plugin {
   private registrations: Disposable[] = [];
   private startupNoticeTimer: ReturnType<typeof setTimeout> | null = null;
   private service: DesignService | null = null;
@@ -52,7 +52,7 @@ export default class ThreadsDesignPlugin extends Plugin {
   }
 
   private notifyUnavailable(): void {
-    new Notice('Design for Agent Threads requires Agent Threads with public API v1.');
+    new Notice('Artifacts for Agent Threads requires Agent Threads with public API v1.');
   }
 
   private async connect(quietIfMissing = false): Promise<void> {
@@ -64,7 +64,7 @@ export default class ThreadsDesignPlugin extends Plugin {
     }
     const missing = REQUIRED_CAPABILITIES.filter(capability => !api.capabilities.includes(capability));
     if (missing.length > 0) {
-      new Notice(`Design for Agent Threads needs a newer Agent Threads version (${missing.join(', ')}).`);
+      new Notice(`Artifacts for Agent Threads needs a newer Agent Threads version (${missing.join(', ')}).`);
       return;
     }
 

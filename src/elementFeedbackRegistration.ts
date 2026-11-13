@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import type { AgentThreadsApiV1 } from './contracts';
 import { createArtifactFeedbackHandler } from './artifactFeedbackHandler';
+import { DESIGN_PROVIDER_OWNER } from './designArtifactProvider';
 import {
   ARTIFACT_FEEDBACK_CONTRACT_VERSIONS,
   type ArtifactFeedbackHandler,
@@ -53,7 +54,7 @@ export function registerElementFeedback(options: ElementFeedbackOptions): Dispos
 
   const coordinator = createSendCoordinator({
     api: options.api,
-    ownerPluginId: 'threads-design',
+    ownerPluginId: DESIGN_PROVIDER_OWNER.pluginId,
     clock: options.clock,
     onDeferredResult: ({ outcome }) => {
       if (outcome.status === 'sent') options.notify('Design: your queued comment was sent to the thread.');

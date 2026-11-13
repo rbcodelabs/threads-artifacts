@@ -73,7 +73,7 @@ function apiFor(designs: ReturnType<typeof hiddenDesign>[], visibleBase = VISIBL
   return { api, refs };
 }
 
-const owner = { pluginId: 'threads-design' };
+const owner = { pluginId: 'threads-artifacts' };
 
 describe('migrateHiddenDesigns', () => {
   it('moves a hidden design into the host-allocated visible folder and rewrites every stored path', async () => {
@@ -83,7 +83,7 @@ describe('migrateHiddenDesigns', () => {
 
     const result = await migrateHiddenDesigns({ api, fs, owner, hiddenRoot: HIDDEN });
 
-    expect(api.artifacts.allocateStorage).toHaveBeenCalledWith('t1', 'design-t1', { location: 'visible', folderName: 'billing-settings', owner: { pluginId: owner.pluginId } });
+    expect(api.artifacts.allocateStorage).toHaveBeenCalledWith('t1', 'design-t1', { location: 'visible', folderName: 'billing-settings', owner: { pluginId: 'threads-design' } });
     const target = `${VISIBLE}/billing-settings`;
     expect(fs.files.has(`${target}/index.html`)).toBe(true);
     expect(fs.files.has(`${target}/artifact.json`)).toBe(true);

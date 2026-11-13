@@ -38,9 +38,17 @@ export const DESIGN_LEGACY_SCHEMA_VERSION = 1 as const;
 
 /** The plugin's own identity when it registers built-in capabilities. */
 export const DESIGN_PROVIDER_OWNER = Object.freeze({
-  pluginId: 'threads-design',
-  displayName: 'Design for Agent Threads',
+  pluginId: 'threads-artifacts',
+  displayName: 'Artifacts for Agent Threads',
 });
+
+/**
+ * Visible-storage namespace: Agent Threads derives `<vault>/Artifacts/<namespace>/` from the
+ * `owner.pluginId` passed to `allocateStorage`. It is deliberately the plugin's ORIGINAL id,
+ * not `DESIGN_PROVIDER_OWNER.pluginId`, so designs keep living under `Artifacts/threads-design/`
+ * after the plugin id changed to `threads-artifacts`. Do not change this without a migration.
+ */
+export const DESIGN_STORAGE_NAMESPACE = 'threads-design';
 
 export const DESIGN_ACTION_PREVIEW = 'preview';
 export const DESIGN_ACTION_CAPTURE = 'capture';
