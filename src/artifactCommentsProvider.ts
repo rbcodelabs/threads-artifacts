@@ -562,10 +562,11 @@ export function createArtifactCommentsProvider(deps: CommentsProviderDeps): Comm
 
     update(target, input) {
       return run(target, async (handle, intake) => {
-        const change = isObject(input) ? input.change : undefined;
-        if (isObject(input) && isObject(change) && change.action === 'unqueue' && isCommentId(input.id)) {
-          const entry = liveBatchFor(intake.root, input.id);
-          if (entry) return unqueueBatch(handle, entry, input.id, input.expectedVersion);
+        const raw: unknown = input;
+        const change = isObject(raw) ? raw.change : undefined;
+        if (isObject(raw) && isObject(change) && change.action === 'unqueue' && isCommentId(raw.id)) {
+          const entry = liveBatchFor(intake.root, raw.id);
+          if (entry) return unqueueBatch(handle, entry, raw.id, raw.expectedVersion);
         }
         return handle.update(input);
       });
