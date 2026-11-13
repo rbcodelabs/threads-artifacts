@@ -102,10 +102,12 @@ function runTests() {
   return { code: result.status, failed: failed ? Number(failed[1]) : 0, passed: passed ? Number(passed[1]) : 0, names: [...new Set(names)].slice(0, 4) };
 }
 
+const maskMode = process.argv[4] === 'mask';
+let mask = 0;
 const from = Number(process.argv[2] ?? 0);
 const to = Number(process.argv[3] ?? mutants.length);
 
-if (from === 0) {
+if (from === 0 && !maskMode) {
   const control = runTests();
   console.log(`CONTROL (no mutation): exit=${control.code} failed=${control.failed} passed=${control.passed}`);
 }
@@ -113,13 +115,16 @@ for (let i = from; i < Math.min(to, mutants.length); i++) {
   const mutant = mutants[i];
   const original = readFileSync(mutant.file, 'utf8');
   const count = original.split(mutant.from).length - 1;
-  if (count !== 1) { console.log(`MUTANT ${mutant.id}: NOT APPLIED (pattern found ${count} times)`); continue; }
+  if (count !== 1) { console.log(`MUTANT ${mutant.id}: NOT APPLIED (pattern found ${count} times)`); mask |= 1 << (i - from); continue; }
   writeFileSync(mutant.file, original.replace(mutant.from, () => mutant.to));
   try {
     const result = runTests();
     const verdict = result.code !== 0 ? 'KILLED' : 'SURVIVED';
+    if (result.code === 0) mask |= 1 << (i - from);
     console.log(`MUTANT ${mutant.id}: ${verdict} (exit=${result.code}, failed=${result.failed}, passed=${result.passed}) ${result.names.map(n => `\n    - ${n}`).join('')}`);
   } finally {
     writeFileSync(mutant.file, original);
   }
 }
+
+if (maskMode) process.exit(mask);
