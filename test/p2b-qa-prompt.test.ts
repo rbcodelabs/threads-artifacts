@@ -512,7 +512,7 @@ describe('fix pass: comment text is quoted line by line', () => {
       for (let i = at + 1; lines[i] !== ''; i++) comment.push(lines[i]);
       expect(comment.length, JSON.stringify(sep)).toBeGreaterThanOrEqual(7);
       for (const line of comment) expect(line.startsWith('> '), JSON.stringify(line)).toBe(true);
-      expect(lines.filter(l => l === marker)).toEqual([]);
+      expect(lines.filter(l => l === marker), 'only the real structural end marker of comment 1').toHaveLength(1);
       expect(lines.filter(l => l.startsWith('=== COMMENT ')).length).toBe(2);
       expect(() => parse(prompt, 2)).not.toThrow();
     }
@@ -544,7 +544,7 @@ describe('fix pass: artifact folder line', () => {
       expect(block.fence.length).toBeGreaterThan(14);
     }
     expect(escalationRe('/escalate').test(prompt)).toBe(false);
-    expect(prompt.split('\n').filter(line => line === '=== END COMMENT 1 ===')).toEqual([]);
+    expect(prompt.split('\n').filter(line => line === '=== END COMMENT 1 ===')).toHaveLength(1);
   });
 
   it('file lines are the fixed relative shape built from the validated selection id only', () => {
@@ -571,7 +571,8 @@ describe('fix pass: extended invisible set versus the pre-P2b single-send builde
       const run = (fn: (i: typeof common) => string): string => { try { return fn(common); } catch (error) { return 'THROW:' + (error as Error).message; } };
       const fresh = run(buildElementPrompt as never);
       const old = run(buildElementPromptOld as never);
-      expect(unescapeNew(fresh), 'round ' + round).toBe(old);
+      const got = unescapeNew(fresh);
+      if (got !== old) { let i = 0; while (got[i] === old[i]) i++; expect.fail('round ' + round + ' first difference at ' + i + ': new=' + JSON.stringify(got.slice(Math.max(0, i - 40), i + 60)) + ' old=' + JSON.stringify(old.slice(Math.max(0, i - 40), i + 60))); }
       for (const cp of NEW_SET) expect(fresh.includes(raw(cp)), 'U+' + cp.toString(16) + ' raw in new output').toBe(false);
     }
   });

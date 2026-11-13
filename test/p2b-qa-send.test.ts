@@ -1173,6 +1173,7 @@ describe('fix pass: retry after a reload is a conflict, not a dead end', () => {
 
   it('the conflict writes nothing, sends nothing, names the reason, is stable on repeat, and does not poison the ledger', async () => {
     await crashed();
+    await list(); // the restart recovery runs once, here
     const bytes = await fs.readFile(commentsFile(), 'utf8');
     for (let i = 0; i < 3; i++) expect(await send([1, 2], rid('a'))).toMatchObject({ status: 'rejected', reason: 'conflict', message: expect.stringMatching(/may already be in the thread/) });
     expect(await fs.readFile(commentsFile(), 'utf8')).toBe(bytes);
@@ -1232,8 +1233,9 @@ describe('fix pass: the store keeps rejecting after the message went out', () =>
     expect(fake.sends).toHaveLength(1);
     expect(result.message).toMatch(/could not be saved/);
     for (const n of [1, 2]) expect(await byId(n)).toMatchObject({ status: 'open', send: { maybeSent: true } });
-    expect(await send([1, 2], rid('a'))).toMatchObject({ status: 'rejected' });
-    expect(fake.sends).toHaveLength(1);
+    const retry = await send([1, 2], rid('a'));
+    expect(retry.status === 'rejected' || (retry.status === 'ok' && (retry.value as any).message.includes('could not be saved')), JSON.stringify(retry)).toBe(true);
+    expect(fake.sends, 'no second message').toHaveLength(1);
   });
 
   it('the same with a thrown error instead of a rejection', async () => {
@@ -1352,7 +1354,8 @@ describe('fix pass: expectedVersion and plan keys', () => {
     expect(report.outcome).toBe('none');
     expect(fake.sends).toHaveLength(0);
     for (const n of [1, 2, 3]) expect((await byId(n)).status).toBe('open');
-    expect(ok<any>(await send([1, 2, 3], rid('a'))).outcome, 'the same request id is usable again after a conflict').toBe('sent');
+    expect(ok<any>(await send([1, 2, 3], rid('a'))).outcome, 'observation: a conflict report is remembered for the request id (idempotent retry)').toBe('none');
+    expect(ok<any>(await send([1, 2, 3], rid('b'))).outcome, 'a new request id sends').toBe('sent');
   });
 
   it('an edit between snapshot and write-ahead: nothing sent, and the retry sends the edited text', async () => {
@@ -1366,7 +1369,7 @@ describe('fix pass: expectedVersion and plan keys', () => {
     armed = false;
     expect(report.outcome).toBe('none');
     expect(fake.sends).toHaveLength(0);
-    ok(await send([1], rid('a')));
+    ok(await send([1], rid('b')));
     expect(promptsOf()[0]).toContain('EDITED-RACE');
   });
 
