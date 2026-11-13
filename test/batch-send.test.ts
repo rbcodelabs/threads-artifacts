@@ -82,7 +82,6 @@ function makeStack(extra: { maxPromptLength?: number; failTransition?: (event: s
     store,
     now: () => nowMs,
     coordinator: coord,
-    boundarySecret: `registration-${live.length}`, // a different random secret per registration, as in production before the fix
     escalation: () => ({ keywords: [], known: true }),
     ...extra,
   });
