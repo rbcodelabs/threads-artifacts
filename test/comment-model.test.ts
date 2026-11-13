@@ -711,3 +711,23 @@ describe('mergeBodies', () => {
     });
   });
 });
+
+describe('P2b review fixes in the model', () => {
+  const ctx = { now: '2026-11-12T10:00:00.000Z' };
+  const SHA = 'ab'.repeat(32);
+  const RID = `req_${'c'.repeat(32)}`;
+
+  it('batch-issued without a prompt hash clears the previous hash; with one it records it and the issue time', () => {
+    const withHash = applyEvent(stored(1), 'batch-issued', { ...ctx, requestId: RID, promptSha: SHA })!;
+    expect(withHash.send).toMatchObject({ lastBatchPromptSha: SHA, lastBatchAt: ctx.now });
+    const pending = { ...withHash, send: { ...withHash.send } };
+    const failed = applyEvent(pending, 'send-failed', { ...ctx, requestId: RID })!;
+    const reissued = applyEvent(failed, 'batch-issued', { ...ctx, requestId: RID })!;
+    expect(reissued.send.lastBatchPromptSha).toBeUndefined();
+  });
+
+  it('expired carries maybeSent like send-failed, and leaves it unchanged otherwise', () => {
+    expect(applyEvent(stored(1, { status: 'pending' }), 'expired', { ...ctx, maybeSent: true })!.send.maybeSent).toBe(true);
+    expect(applyEvent(stored(1, { status: 'pending' }), 'expired', ctx)!.send.maybeSent).toBe(false);
+  });
+});

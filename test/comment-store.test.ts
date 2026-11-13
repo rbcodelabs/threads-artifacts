@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { createHmac } from 'node:crypto';
 import * as fsSync from 'node:fs';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
@@ -1222,11 +1223,11 @@ describe('P2b reload safety: prompt hash, uncertain failures, stable batch secre
     for (const n of [1, 2]) ok(await h.create(pinDraft(n)));
     ok(await h.transition([{ id: cmtId(1), event: 'batch-issued', requestId: RID, promptSha: SHA }]));
     const marks = await h.batchMarks([cmtId(1), cmtId(2)]);
-    expect(marks.get(cmtId(1))).toEqual({ requestId: RID, promptSha: SHA });
-    expect(marks.get(cmtId(2))).toEqual({ requestId: null, promptSha: null });
+    expect(marks.get(cmtId(1))).toEqual({ requestId: RID, promptSha: SHA, issuedAt: NOW });
+    expect(marks.get(cmtId(2))).toEqual({ requestId: null, promptSha: null, issuedAt: null });
     // It survives a restart and is never part of the public comment.
     const again = await openWith();
-    expect((await again.batchMarks([cmtId(1)])).get(cmtId(1))).toEqual({ requestId: RID, promptSha: SHA });
+    expect((await again.batchMarks([cmtId(1)])).get(cmtId(1))).toEqual({ requestId: RID, promptSha: SHA, issuedAt: NOW });
     expect(JSON.stringify((await again.snapshot()).comments)).not.toContain(SHA);
   });
 
@@ -1257,5 +1258,7 @@ describe('P2b reload safety: prompt hash, uncertain failures, stable batch secre
     expect(a1).not.toBe(b);
     expect(a1).toMatch(/^[0-9a-f]{64}$/);
     expect(a1).not.toBe(Buffer.from(KEY).toString('hex'));
+    // The label is persisted in every pending retry's token: it must never change (a rename invalidates them all).
+    expect(a1).toBe(createHmac('sha256', KEY).update('threads-design/batch-boundary/v1').digest('hex'));
   });
 });

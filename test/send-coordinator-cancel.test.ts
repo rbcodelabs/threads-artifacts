@@ -117,3 +117,35 @@ describe('uncertain failures are flagged', () => {
     expect((refused as { maybeSent?: boolean }).maybeSent).toBeUndefined();
   });
 });
+
+describe('an abandoned (timed-out) run whose send is still outstanding', () => {
+  async function abandoned() {
+    const { fake, clock, coordinator } = setup();
+    let release!: () => void;
+    fake.state.gate = new Promise<void>(resolve => { release = resolve; });
+    const first = coordinator.submit(req('req_a', 'prompt one'));
+    await clock.flush();
+    await clock.advance(ATTEMPT_TIMEOUT_MS + 1);
+    expect(await first).toMatchObject({ status: 'rejected', maybeSent: true });
+    return { fake, clock, coordinator, release };
+  }
+
+  it('a retry of the same request with a DIFFERENT prompt is refused while the first send may still land, and works once it settled', async () => {
+    const { fake, clock, coordinator, release } = await abandoned();
+    expect(await coordinator.submit(req('req_a', 'prompt two'))).toMatchObject({ status: 'rejected', reason: 'busy', maybeSent: true });
+    release();
+    await clock.flush();
+    expect(fake.sends).toHaveLength(1);
+    expect(await coordinator.submit(req('req_a', 'prompt two'))).toEqual({ status: 'sent' });
+    expect(fake.sends).toHaveLength(2);
+  });
+
+  it('a retry with the SAME prompt is allowed (same idempotency key, so the host dedupes it)', async () => {
+    const { fake, clock, coordinator, release } = await abandoned();
+    const retry = coordinator.submit(req('req_a', 'prompt one'));
+    release();
+    await clock.flush();
+    expect(await retry).toEqual({ status: 'sent' });
+    expect(fake.sends).toHaveLength(1);
+  });
+});

@@ -3,6 +3,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createArtifactCommentsProvider, type CommentsProviderController } from '../src/artifactCommentsProvider';
+import { createHash } from 'node:crypto';
 import { bodySha256 } from '../src/commentModel';
 import { createCommentStore, type CommentRootHandle, type CommentStore } from '../src/commentStore';
 import { buildDesignManifest } from '../src/designArtifact';
@@ -62,14 +63,15 @@ async function makeArtifact(): Promise<string> {
 }
 
 /** One provider stack over `root`. Calling it again simulates a plugin reload (fresh store, provider and coordinator). */
-function makeStack(extra: { maxPromptLength?: number; failTransition?: (event: string) => boolean } = {}) {
+function makeStack(extra: { maxPromptLength?: number; failTransition?: (event: string) => boolean; failSecret?: boolean } = {}) {
   const realStore = createCommentStore({ keys: { getKey: async () => KEY }, now: () => new Date(START_MS) });
-  const store: CommentStore = extra.failTransition
+  const store: CommentStore = extra.failTransition || extra.failSecret
     ? { async open(t) {
         const handle = await realStore.open(t);
         return new Proxy(handle, { get(obj, prop) {
           const value = Reflect.get(obj, prop) as unknown;
-          if (prop === 'transition') return (items: readonly any[]) => (extra.failTransition!(items[0]?.event) ? Promise.resolve({ status: 'rejected', reason: 'failed', message: 'disk full' }) : (obj as any).transition(items));
+          if (prop === 'batchSecret' && extra.failSecret) return () => Promise.reject(new Error('The signing key did not load in time.'));
+          if (prop === 'transition') return (items: readonly any[]) => (extra.failTransition?.(items[0]?.event) ? Promise.resolve({ status: 'rejected', reason: 'failed', message: 'disk full' }) : (obj as any).transition(items));
           return typeof value === 'function' ? (value as (...a: unknown[]) => unknown).bind(obj) : value;
         } }) as CommentRootHandle;
       } }
@@ -90,7 +92,7 @@ function makeStack(extra: { maxPromptLength?: number; failTransition?: (event: s
   return { controller: ctl, coordinator: coord };
 }
 
-function useStack(extra: { maxPromptLength?: number; failTransition?: (event: string) => boolean } = {}) {
+function useStack(extra: { maxPromptLength?: number; failTransition?: (event: string) => boolean; failSecret?: boolean } = {}) {
   const stack = makeStack(extra);
   controller = stack.controller;
   coordinator = stack.coordinator;
@@ -753,5 +755,80 @@ describe('timeout, plugin reload, then the same request id (QF-F13b at plugin le
     const sendSpy = await timedOutThenReloaded();
     expect(await send([1], rid('a'))).toMatchObject({ status: 'rejected', reason: 'conflict' });
     expect(sendSpy.mock.calls).toHaveLength(1);
+  });
+});
+
+describe('review fixes: dedupe window, uncertain errors, thread-bound hash, key errors', () => {
+  const MINUTE = 60 * 1000;
+
+  async function timedOutThenReloaded() {
+    await pins(1);
+    let release!: () => void;
+    fake.state.gate = new Promise<void>(resolve => { release = resolve; });
+    const sendSpy = vi.spyOn(fake.api.threads, 'send');
+    const first = send([1], rid('a'));
+    expect(await until(() => sendSpy.mock.calls.length === 1)).toBe(true);
+    await clock.advance(ATTEMPT_TIMEOUT_MS + 10);
+    await first;
+    release();
+    await settle();
+    controller.dispose();
+    coordinator.dispose();
+    useStack();
+  }
+
+  it('the identical-prompt retry of a maybe-sent comment still proceeds just inside 15 minutes of the write-ahead', async () => {
+    await timedOutThenReloaded();
+    nowMs = START_MS + 15 * MINUTE - 1000;
+    expect(ok<any>(await send([1], rid('a'))).outcome).toBe('sent');
+    expect(fake.sends).toHaveLength(1);
+  });
+
+  it('just outside the window it is a conflict that says to check the thread and send again as a new request, and sends nothing', async () => {
+    await timedOutThenReloaded();
+    nowMs = START_MS + 15 * MINUTE + 1000;
+    const result = await send([1], rid('a'));
+    expect(result).toMatchObject({ status: 'rejected', reason: 'conflict', message: expect.stringMatching(/check the thread/i) });
+    expect(fake.sends).toHaveLength(1);
+    expect(ok<any>(await send([1], rid('b'))).outcome, 'a new request id is the explicit second message').toBe('sent');
+  });
+
+  it('an unknown error after threads.send was issued counts as maybe-sent; a known definite failure does not', async () => {
+    await pins(2);
+    fake.sendErrors.push(new Error('socket hang up'));
+    expect(await send([1], rid('a'))).toMatchObject({ status: 'rejected', reason: 'failed' });
+    expect(await byId(1)).toMatchObject({ status: 'open', send: { lastOutcome: 'failed', maybeSent: true } });
+    fake.sendErrors.push(new FakeApiError('INVALID_ARGUMENT'));
+    await send([2], rid('b'));
+    expect(await byId(2)).toMatchObject({ status: 'open', send: { lastOutcome: 'failed', maybeSent: false } });
+  });
+
+  it('when the send-failed write keeps failing, the expired fallback still carries maybeSent for a timeout', async () => {
+    controller.dispose(); coordinator.dispose();
+    useStack({ failTransition: event => event === 'send-failed' });
+    await pin(1);
+    fake.sendErrors.push(new Error('socket hang up'));
+    await send([1], rid('a'));
+    expect(await byId(1)).toMatchObject({ status: 'open', send: { lastOutcome: 'failed', maybeSent: true } });
+  });
+
+  it('the stored prompt hash is bound to the thread: sha256(threadId, newline, prompt)', async () => {
+    await pin(1);
+    ok(await send([1]));
+    const file = JSON.parse(await fs.readFile(commentsFile(), 'utf8'));
+    expect(file.comments[0].send.lastBatchPromptSha).toBe(createHash('sha256').update(`t1\n${fake.sends[0].prompt}`).digest('hex'));
+    expect(file.comments[0].send.lastBatchAt).toEqual(expect.any(String));
+  });
+
+  it('a key that cannot be read is reported as unavailable with an honest message, not as an unsafe prompt', async () => {
+    controller.dispose(); coordinator.dispose();
+    useStack({ failSecret: true });
+    await pin(1);
+    const result = await send([1]);
+    expect(result).toMatchObject({ status: 'rejected', reason: 'unavailable' });
+    expect((result as { message: string }).message).not.toMatch(/safe/i);
+    expect((result as { message: string }).message).toMatch(/key|unavailable|try again/i);
+    expect(fake.sends).toHaveLength(0);
+    expect(await byId(1)).toMatchObject({ status: 'open', version: 1 });
   });
 });
