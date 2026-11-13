@@ -1863,3 +1863,49 @@ describe('review fixes: persisted label, dedupe window, thread-bound hash, uncer
     expect(JSON.stringify(result)).not.toMatch(/safe to send/);
   });
 });
+
+
+describe('review fixes: store-level validation and the uncertain queued path', () => {
+  it('the store rejects a hostile prompt hash or maybeSent value in a transition as invalid and changes nothing', async () => {
+    await pins(1);
+    const store = createCommentStore({ keys: { getKey: async () => KEY }, now: () => new Date(START_MS) });
+    const handle = await store.open({ root, artifactId: 'design-t1' });
+    const bytes = await fs.readFile(commentsFile(), 'utf8');
+    for (const bad of ['zz', 'A'.repeat(64), 'f'.repeat(63), 5, {}]) {
+      expect(await handle.transition([{ id: cmtId(1), event: 'batch-issued', requestId: rid('a'), promptSha: bad as never }]), JSON.stringify(bad)).toMatchObject({ status: 'rejected', reason: 'invalid' });
+    }
+    expect(await handle.transition([{ id: cmtId(1), event: 'send-failed', requestId: rid('a'), maybeSent: 'yes' as never }])).toMatchObject({ status: 'rejected', reason: 'invalid' });
+    expect(await fs.readFile(commentsFile(), 'utf8')).toBe(bytes);
+    handle.dispose();
+  });
+
+  it('a hostile stored prompt hash is not carried into the next write of comments.json', async () => {
+    await pins(1);
+    await rewriteComments(file => { file.comments[0].send.lastBatchPromptSha = { evil: 'object' }; file.comments[0].send.lastBatchAt = { evil: 1 }; });
+    const c = await byId(1);
+    ok(await provider.update(target, { id: cmtId(1), expectedVersion: c.version, change: { action: 'resolve' } }, ctx()));
+    const written = JSON.parse(await fs.readFile(commentsFile(), 'utf8')).comments[0].send;
+    for (const value of [written.lastBatchPromptSha, written.lastBatchAt]) expect(value === undefined || typeof value === 'string').toBe(true);
+    if (written.lastBatchPromptSha !== undefined) expect(written.lastBatchPromptSha).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('a queued send that fails with an UNKNOWN error at drain time leaves the comments maybe-sent (the host may have taken it), a known code does not', async () => {
+    await pins(2);
+    running(true);
+    ok(await send([1], rid('a')));
+    running(false);
+    fake.sendErrors.push(new Error('socket hang up'));
+    fake.emit({ kind: 'run.completed', threadId: 't1', runId: 'x' });
+    await clock.advance(300);
+    await settle();
+    expect(await byId(1)).toMatchObject({ status: 'open', send: { lastOutcome: 'failed', maybeSent: true } });
+    running(true);
+    ok(await send([2], rid('b')));
+    running(false);
+    fake.sendErrors.push(new FakeApiError('RUN_FAILED'));
+    fake.emit({ kind: 'run.completed', threadId: 't1', runId: 'y' });
+    await clock.advance(300);
+    await settle();
+    expect(await byId(2)).toMatchObject({ status: 'open', send: { lastOutcome: 'failed', maybeSent: false } });
+  });
+});

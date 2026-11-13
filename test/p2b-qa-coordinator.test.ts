@@ -280,3 +280,33 @@ describe('review fixes: an attempt that timed out stays outstanding while its se
     expect(await coordinator.submit(req('req_a', 'prompt-two'))).toMatchObject({ status: 'rejected', reason: 'unavailable' });
   });
 });
+
+
+describe('review fixes: reload mid-send is flagged maybe-sent only when the send was issued', () => {
+  it('dispose while threads.send is in flight: the caller learns it may have been sent', async () => {
+    const { fake, clock, coordinator } = setup();
+    let release!: () => void;
+    fake.state.gate = new Promise<void>(resolve => { release = resolve; });
+    const first = coordinator.submit(req('req_a', 'p'));
+    await clock.flush();
+    coordinator.dispose();
+    release();
+    await clock.flush();
+    expect(await first).toMatchObject({ status: 'rejected', reason: 'unavailable', maybeSent: true });
+  });
+
+  it('dispose before threads.send was issued (threads.get still pending): not flagged', async () => {
+    const { fake, clock, coordinator, gate } = setup({ holdGet: true });
+    fake.threads.get('t1')!.isRunning = false;
+    gate.hold = true;
+    const first = coordinator.submit(req('req_a', 'p'));
+    await clock.flush();
+    coordinator.dispose();
+    gate.hold = false; gate.release();
+    await clock.flush();
+    const result = await first;
+    expect(result).toMatchObject({ status: 'rejected', reason: 'unavailable' });
+    expect((result as { maybeSent?: boolean }).maybeSent).toBeUndefined();
+    expect(fake.sends).toHaveLength(0);
+  });
+});
