@@ -252,7 +252,7 @@ describe('token collision loop (property test)', () => {
 
   it('gives up cleanly (nothing included) when every attempt collides', () => {
     const forged = Array.from({ length: 12 }, (_, attempt) => boundaryToken(SECRET, REQUEST_ID, attempt)).join(' ');
-    const result = buildBatchPrompt(input([item(1, { label: forged })]));
+    const result = buildBatchPrompt(input([item(1, { label: forged, selectionPatch: { outerHTML: { html: `<i>${forged}</i>`, truncated: false } } })]));
     expect(result.prompt).toBeNull();
     expect(result.includedIds).toEqual([]);
   });

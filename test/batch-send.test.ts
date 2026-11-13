@@ -499,7 +499,6 @@ describe('sendBatch: busy agent, queue, drain', () => {
     await pins(2);
     fake.threads.get('t1')!.isRunning = true;
     ok(await send([1, 2]));
-    fake.threads.delete('t1');
     fake.emit({ kind: 'thread.removed', threadId: 't1' } as never);
     await settle();
     for (const n of [1, 2]) expect(await byId(n)).toMatchObject({ status: 'open', send: { attempts: 1, lastOutcome: 'failed', lastMessage: expect.stringMatching(/thread was deleted/) } });
