@@ -366,6 +366,7 @@ describe('hung sends (QB2)', () => {
     const coordinator = make();
     fake.state.hangSends = 1;
     const first = coordinator.submit(req('sel_a', 'same prompt'));
+    await clock.flush(); // the attempt reaches the hung send before the timeout fires (a run that times out earlier is abandoned)
     await clock.advance(ATTEMPT_TIMEOUT_MS + 100);
     const outcome = await first;
     expect(outcome).toMatchObject({ status: 'rejected', reason: 'failed', message: expect.stringContaining('check the thread') });
@@ -396,6 +397,7 @@ describe('attempt timeout vs the Geode submit timeout', () => {
     const coordinator = make();
     fake.state.hangSends = 1;
     const first = coordinator.submit(req('sel_a', 'same prompt'));
+    await clock.flush(); // the attempt reaches the hung send before the timeout fires
     await clock.advance(ARTIFACT_FEEDBACK_SUBMIT_TIMEOUT_MS); // Geode gives up here
     expect(await first).toMatchObject({ status: 'rejected', message: expect.stringContaining('check the thread') });
     expect(await coordinator.submit(req('sel_a', 'same prompt'))).toEqual({ status: 'sent' });
