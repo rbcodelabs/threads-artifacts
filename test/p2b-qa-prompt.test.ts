@@ -166,9 +166,9 @@ describe('structure survives hostile text: hostile twin and benign twin have the
         expect(A.fence.length).toBeGreaterThan(Math.max(0, ...A.body.join('\n').split(/[^`]+/).map(run => run.length)));
       }
       // No raw control or separator characters anywhere in the prompt (comment text here is plain).
-      expect(attack.prompt).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f  ]/);
+      expect(attack.prompt).not.toMatch(new RegExp('[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u2028\u2029]'));
       // Bidi controls, BOM, soft hyphen, ALM and Unicode tag characters are escaped (the zero-width space is the plugin's own defuser and is allowed).
-      expect(attack.prompt).not.toMatch(/[‪-‮⁦-⁩‌-‏؜﻿­\u{e0000}-\u{e007f}]/u);
+      expect(attack.prompt).not.toMatch(new RegExp('[\u202a-\u202e\u2066-\u2069\u200c-\u200f\u061c\ufeff\u00ad\u{e0000}-\u{e007f}]', 'u'));
       expect(escalationRe('/escalate').test(attack.prompt)).toBe(false);
       expect(attack.prompt).not.toContain('https://');
       expect(attack.prompt).not.toContain('http://');
