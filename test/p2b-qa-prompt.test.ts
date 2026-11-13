@@ -171,7 +171,7 @@ describe('structure survives hostile text: hostile twin and benign twin have the
       expect(attack.prompt).not.toMatch(new RegExp('[\u202a-\u202e\u2066-\u2069\u200c-\u200f\u061c\ufeff\u00ad\u{e0000}-\u{e007f}]', 'u'));
       expect(escalationRe('/escalate').test(attack.prompt)).toBe(false);
       // URLs in page data are defused inside every fenced block (the unfenced path lines are a separate, documented concern).
-      for (const block of parsedA.blocks) { const body = block.body.join('\n'); expect(body).not.toContain('https://'); expect(body).not.toContain('http://'); }
+      for (const block of parsedA.blocks) { const body = block.body.join('\n'); expect(body).not.toMatch(/(^|[^A-Za-z0-9_])https?:\/\//i); }
       // The token appears exactly 2N times and the forged marker lines only appear JSON-escaped inside a line, never as a line.
       expect(OCC(attack.prompt, parsedA.token)).toBe(40);
       expect(a.filter(line => line.startsWith('END-bnd-0000000000000000'))).toEqual([]);
