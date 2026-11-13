@@ -1,7 +1,7 @@
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createArtifactCommentsProvider, type CommentsProviderController } from '../src/artifactCommentsProvider';
 import { bodySha256 } from '../src/commentModel';
 import { createCommentStore, type CommentRootHandle, type CommentStore } from '../src/commentStore';
@@ -281,11 +281,14 @@ describe('reload while a send is in flight, then the client retries the same req
     useStack({ boundarySecret: newSecret });
   }
 
-  it('reload with the SAME secret: a retry of the same request id is still refused for confirmation (the plugin cannot know the secret is stable), nothing more is sent', async () => {
+  it('reload, then the same request id with unchanged content: the rebuilt prompt is byte-identical (the boundary secret comes from the install key), so the host dedupes it and one message exists in total', async () => {
     useStack({ boundarySecret: 'S1' });
+    const sendSpy = vi.spyOn(fake.api.threads, 'send');
     await crashedAfterDelivery('S1');
-    expect(await send([1], rid('a'))).toMatchObject({ status: 'rejected', reason: 'conflict' });
+    expect(ok<any>(await send([1], rid('a'))).outcome).toBe('sent');
     expect(fake.sends).toHaveLength(1);
+    const keys = new Set(sendSpy.mock.calls.map(call => (call[1] as { idempotencyKey: string }).idempotencyKey));
+    expect(keys.size, 'both attempts used one idempotency key').toBe(1);
   });
 
   it('after the reload the comment is open, flagged maybeSent and the notice says so', async () => {
@@ -1156,7 +1159,7 @@ describe('fix pass: abandoned runs (timeout at every await of the coordinator)',
     expect(fake.sends, 'same request id: host dedupes').toHaveLength(1);
   });
 
-  it.fails('ADVISORY: timeout (message may have arrived), then a reload, then the same request id: must not send a second message', async () => {
+  it('ADVISORY: timeout (message may have arrived), then a reload, then the same request id: must not send a second message', async () => {
     useStack({ boundarySecret: 'S1' });
     await pins(1);
     const release = gateSends();
@@ -1189,9 +1192,18 @@ describe('fix pass: retry after a reload is a conflict, not a dead end', () => {
     useStack({ boundarySecret: 'S2' });
   }
 
-  it('the conflict writes nothing, sends nothing, names the reason, is stable on repeat, and does not poison the ledger', async () => {
+  it('unchanged content: the retry rebuilds the same prompt, the host dedupes it, still one message in total, and the comments end sent', async () => {
     await crashed();
     await list(); // the restart recovery runs once, here
+    expect(ok<any>(await send([1, 2], rid('a'))).outcome).toBe('sent');
+    expect(fake.sends).toHaveLength(1);
+    for (const n of [1, 2]) expect(await byId(n)).toMatchObject({ status: 'sent', send: { maybeSent: false } });
+  });
+
+  it('changed content (an edited comment): the retry is a conflict that writes nothing, sends nothing, names the reason, and is stable on repeat', async () => {
+    await crashed();
+    const c = await byId(1);
+    ok(await provider.update(target, { id: cmtId(1), expectedVersion: c.version, change: { text: 'Changed after the restart' } }, ctx()));
     const bytes = await fs.readFile(commentsFile(), 'utf8');
     for (let i = 0; i < 3; i++) expect(await send([1, 2], rid('a'))).toMatchObject({ status: 'rejected', reason: 'conflict', message: expect.stringMatching(/may already be in the thread/) });
     expect(await fs.readFile(commentsFile(), 'utf8')).toBe(bytes);
@@ -1347,7 +1359,7 @@ describe('fix pass: cancelled tombstone', () => {
     expect(ok<any>(await send([1, 2], rid('b'))).outcome).toBe('sent');
   });
 
-  it.fails('BUG: a batch queued for more than 10 minutes and then cancelled loses its tombstone at once (the window runs from creation), so a late retry revives it', async () => {
+  it('BUG: a batch queued for more than 10 minutes and then cancelled loses its tombstone at once (the window runs from creation), so a late retry revives it', async () => {
     await pins(1);
     running(true);
     ok(await send([1], rid('a')));

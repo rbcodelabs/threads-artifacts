@@ -82,7 +82,7 @@ function makeStack(extra: { maxPromptLength?: number; failTransition?: (event: s
     store,
     now: () => nowMs,
     coordinator: coord,
-    boundarySecret: 'batch-test-secret',
+    boundarySecret: `registration-${live.length}`, // a different random secret per registration, as in production before the fix
     escalation: () => ({ keywords: [], known: true }),
     ...extra,
   });
@@ -694,5 +694,65 @@ describe('fix pass: reporting, cancelled requests, input order', () => {
     ok(await provider.update(target, { id: cmtId(1), expectedVersion: member.version, change: { text: 'Edited text' } }, ctx()));
     ok(await send([1], rid('a')));
     expect(fake.sends.at(-1)!.prompt).toContain('Edited text');
+  });
+});
+
+describe('timeout, plugin reload, then the same request id (QF-F13b at plugin level)', () => {
+  /** The host receives the message after the plugin gave up waiting for the answer. */
+  async function timedOutThenReloaded() {
+    await pins(2);
+    const sendSpy = vi.spyOn(fake.api.threads, 'send');
+    let release!: () => void;
+    fake.state.gate = new Promise<void>(resolve => { release = resolve; });
+    const first = send([1, 2], rid('a'));
+    expect(await until(() => sendSpy.mock.calls.length === 1)).toBe(true);
+    await clock.advance(ATTEMPT_TIMEOUT_MS + 10);
+    expect(await first).toMatchObject({ status: 'rejected', reason: 'failed' });
+    release();
+    await settle();
+    expect(fake.sends).toHaveLength(1);
+    controller.dispose();
+    coordinator.dispose();
+    useStack(); // a new registration: new boundary secret, fresh store handle, empty ledger
+    return sendSpy;
+  }
+
+  it('the timeout leaves the comments open and flagged maybe-sent, still marked as a failed attempt', async () => {
+    await pin(1);
+    fake.state.hangSends = 1;
+    const first = send([1]);
+    await settle();
+    await clock.advance(ATTEMPT_TIMEOUT_MS + 10);
+    await first;
+    expect(await byId(1)).toMatchObject({ status: 'open', send: { lastOutcome: 'failed', maybeSent: true } });
+  });
+
+  it('unchanged content: exactly one message reaches the host in total, under one idempotency key', async () => {
+    const sendSpy = await timedOutThenReloaded();
+    const retry = ok<any>(await send([1, 2], rid('a')));
+    expect(retry.outcome).toBe('sent');
+    expect(fake.sends).toHaveLength(1);
+    expect(sendSpy.mock.calls).toHaveLength(2);
+    const keys = new Set(sendSpy.mock.calls.map(call => (call[1] as { idempotencyKey: string }).idempotencyKey));
+    expect(keys.size).toBe(1);
+    for (const n of [1, 2]) expect(await byId(n)).toMatchObject({ status: 'sent', send: { maybeSent: false } });
+  });
+
+  it('changed content (a comment edited after the timeout): a conflict, and no second message', async () => {
+    const sendSpy = await timedOutThenReloaded();
+    const member = await byId(1);
+    ok(await provider.update(target, { id: cmtId(1), expectedVersion: member.version, change: { text: 'Edited after the timeout' } }, ctx()));
+    expect(await send([1, 2], rid('a'))).toMatchObject({ status: 'rejected', reason: 'conflict' });
+    expect(sendSpy.mock.calls).toHaveLength(1);
+    expect(fake.sends).toHaveLength(1);
+    // The user can still send it on purpose, as a new request.
+    expect(ok<any>(await send([1, 2], rid('b'))).outcome).toBe('sent');
+    expect(fake.sends).toHaveLength(2);
+  });
+
+  it('a different set of ids under the same request id after the reload is a conflict too', async () => {
+    const sendSpy = await timedOutThenReloaded();
+    expect(await send([1], rid('a'))).toMatchObject({ status: 'rejected', reason: 'conflict' });
+    expect(sendSpy.mock.calls).toHaveLength(1);
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createSendCoordinator, type DeferredSendResult } from '../src/sendCoordinator';
+import { ATTEMPT_TIMEOUT_MS, createSendCoordinator, type DeferredSendResult } from '../src/sendCoordinator';
 import { createFakeApi } from './helpers/fakeApi';
 import { createFakeClock } from './helpers/fakeClock';
 
@@ -100,5 +100,20 @@ describe('sendCoordinator.isBusy', () => {
     expect(coordinator.isBusy('art-2', 'req_b')).toBe(false);
     coordinator.cancel('art-1', 'req_a');
     expect(coordinator.isBusy('art-1', 'req_b')).toBe(false);
+  });
+});
+
+describe('uncertain failures are flagged', () => {
+  it('a timeout (the message may have been received) carries maybeSent, a definite failure does not', async () => {
+    const { fake, clock, coordinator } = setup();
+    fake.state.hangSends = 1;
+    const hung = coordinator.submit(req('req_a'));
+    await clock.flush();
+    await clock.advance(ATTEMPT_TIMEOUT_MS + 1);
+    expect(await hung).toMatchObject({ status: 'rejected', reason: 'failed', maybeSent: true });
+    fake.sendErrors.push(Object.assign(new Error('x'), { code: 'INVALID_ARGUMENT' }));
+    const refused = await coordinator.submit(req('req_b'));
+    expect(refused).toMatchObject({ status: 'rejected', reason: 'invalid' });
+    expect((refused as { maybeSent?: boolean }).maybeSent).toBeUndefined();
   });
 });

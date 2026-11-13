@@ -580,7 +580,7 @@ describe('fix pass: extended invisible set versus the pre-P2b single-send builde
 });
 
 describe('fix pass: URL defusing next to escaped invisible characters', () => {
-  it.fails('ADVISORY: a URL right after an invisible character that gets escaped (U+200B, U+3164) is still defused', () => {
+  it('ADVISORY: a URL right after an invisible character that gets escaped (U+200B, U+3164) is still defused', () => {
     for (const cp of [0x200b, 0x3164, 0x2800]) {
       const text = String.fromCodePoint(cp) + 'http://evil.example/x';
       const { prompt } = build([item(1, { label: text, selectionPatch: { selector: text } })]);
