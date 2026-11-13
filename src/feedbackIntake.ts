@@ -4,6 +4,7 @@ import type { AgentThreadsApiV1 } from './contracts';
 import { parseDesignManifest, type DesignArtifactManifest } from './designArtifact';
 import { DESIGN_ARTIFACT_KIND } from './designArtifactProvider';
 import type { ArtifactFeedbackTarget } from './geodeArtifactFeedback';
+import { THREAD_GONE_MESSAGE } from './threadGone';
 
 /**
  * Intake: decide whether a feedback target really is a Design static artifact owned by one of our
@@ -15,7 +16,6 @@ import type { ArtifactFeedbackTarget } from './geodeArtifactFeedback';
 const MAX_MANIFEST_BYTES = 64 * 1024;
 export const NOT_A_DESIGN_MESSAGE = 'This artifact was not created by Design, so its comments cannot be sent to a thread.';
 export const STORAGE_UNKNOWN_MESSAGE = 'Agent Threads has no storage location recorded for this design, so its comments cannot be sent to a thread.';
-const THREAD_GONE_MESSAGE = 'The thread that created this design no longer exists.';
 const UNAVAILABLE_MESSAGE = 'Agent Threads is not available right now. Try again in a moment.';
 
 export interface IntakeDeps {

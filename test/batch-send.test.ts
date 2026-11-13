@@ -512,7 +512,7 @@ describe('sendBatch: busy agent, queue, drain', () => {
     ok(await send([1, 2]));
     fake.emit({ kind: 'thread.removed', threadId: 't1' } as never);
     await settle();
-    for (const n of [1, 2]) expect(await byId(n)).toMatchObject({ status: 'open', send: { attempts: 1, lastOutcome: 'failed', lastMessage: expect.stringMatching(/thread was deleted/) } });
+    for (const n of [1, 2]) expect(await byId(n)).toMatchObject({ status: 'open', send: { attempts: 1, lastOutcome: 'failed', lastMessage: expect.stringMatching(/archived or deleted/) } });
     expect(coordinator.pendingCount).toBe(0);
   });
 
