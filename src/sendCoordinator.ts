@@ -33,6 +33,8 @@ const MESSAGES = {
   runFailed: 'The agent could not start this message. Check the thread, then try again.',
   unavailable: 'Agent Threads is not available right now. Try again in a moment.',
   generic: 'Could not send to the thread. Try again.',
+  unconfirmed: 'Could not confirm the send. It may have reached the thread; check the thread before retrying.',
+  stillSending: 'The earlier attempt may still be reaching the thread. Wait a moment, then try again.',
   disposed: 'Design is shutting down. Try again once it has reloaded.',
   statusUnknown: 'Design reloaded while sending. The comment may already have reached the thread; check the thread before retrying.',
   timedOut: 'Agent Threads did not answer in time. The comment may have been received; check the thread before retrying.',
@@ -106,14 +108,15 @@ const rejected = (reason: Rejected['reason'], message: string): Rejected => ({ s
 const uncertain = (reason: Rejected['reason'], message: string): Rejected => ({ status: 'rejected', reason, message, maybeSent: true });
 const errorCode = (error: unknown): string | undefined => (typeof error === 'object' && error !== null ? (error as { code?: string }).code : undefined);
 
-function mapSendError(error: unknown): Rejected {
+/** `issued`: threads.send was already called, so an error we cannot classify may still have come after delivery. */
+function mapSendError(error: unknown, issued = false): Rejected {
   switch (errorCode(error)) {
     case 'IDEMPOTENCY_CONFLICT': return rejected('failed', MESSAGES.conflict);
     case 'INVALID_ARGUMENT': return rejected('invalid', MESSAGES.invalid);
     case 'THREAD_NOT_FOUND': return rejected('unavailable', MESSAGES.gone);
     case 'RUN_FAILED': return rejected('failed', MESSAGES.runFailed);
     case 'PLUGIN_UNAVAILABLE': return rejected('unavailable', MESSAGES.unavailable);
-    default: return rejected('failed', MESSAGES.generic);
+    default: return issued ? uncertain('failed', MESSAGES.unconfirmed) : rejected('failed', MESSAGES.generic);
   }
 }
 
@@ -138,6 +141,7 @@ export function createSendCoordinator(options: SendCoordinatorOptions): SendCoor
   const clock = options.clock ?? realClock;
   const slots = new Map<string, Slot>();
   const inFlight = new Map<string, { selectionId: string; promise: Promise<SendOutcome> }>();
+  const outstanding = new Map<string, { issued: { value: boolean }; prompt: string; run: Promise<SendOutcome> }>();
   const ttlMs = options.pendingTtlMs ?? PENDING_TTL_MS;
   const attemptTimeoutMs = options.attemptTimeoutMs ?? ATTEMPT_TIMEOUT_MS;
 
@@ -176,7 +180,7 @@ export function createSendCoordinator(options: SendCoordinatorOptions): SendCoor
       }));
     } catch (error) {
       if (errorCode(error) === 'THREAD_BUSY') return BUSY;
-      return mapSendError(error);
+      return mapSendError(error, true);
     }
     return verifyRun(runId);
   }
@@ -291,14 +295,14 @@ export function createSendCoordinator(options: SendCoordinatorOptions): SendCoor
       if (outcome === BUSY && abandoned.value) return rejected('failed', MESSAGES.timedOut);
       return outcome === BUSY ? hold(request) : outcome;
     } catch (error) {
-      return mapSendError(error);
+      return mapSendError(error, issued.value);
     }
   }
 
-  function withTimeout(promise: Promise<SendOutcome>, abandoned: { value: boolean }): Promise<SendOutcome> {
+  function withTimeout(promise: Promise<SendOutcome>, abandoned: { value: boolean }, issued: { value: boolean }, onAbandon: () => void): Promise<SendOutcome> {
     return new Promise(resolve => {
-      const timer = clock.setTimeout(() => { abandoned.value = true; resolve(uncertain('failed', MESSAGES.timedOut)); }, attemptTimeoutMs);
-      promise.then(outcome => { clock.clearTimeout(timer); resolve(outcome); }, error => { clock.clearTimeout(timer); resolve(mapSendError(error)); });
+      const timer = clock.setTimeout(() => { abandoned.value = true; onAbandon(); resolve(uncertain('failed', MESSAGES.timedOut)); }, attemptTimeoutMs);
+      promise.then(outcome => { clock.clearTimeout(timer); resolve(outcome); }, error => { clock.clearTimeout(timer); resolve(mapSendError(error, issued.value)); });
     });
   }
 
@@ -308,9 +312,21 @@ export function createSendCoordinator(options: SendCoordinatorOptions): SendCoor
     if (held) return Promise.resolve(held.selectionId === request.selectionId ? { status: 'queued' } : rejected('busy', BUSY_MESSAGE));
     const running = inFlight.get(request.artifactKey);
     if (running) return running.selectionId === request.selectionId ? running.promise : Promise.resolve(rejected('busy', BUSY_MESSAGE));
+    // An attempt that timed out is not forgotten while its threads.send may still land. A retry of the same request with
+    // the SAME prompt is safe (same idempotency key: the host replays it); a different prompt would be a second message.
+    const outstandingKey = `${request.artifactKey}\0${request.selectionId}`;
+    const earlier = outstanding.get(outstandingKey);
+    if (earlier && earlier.issued.value && earlier.prompt !== request.prompt) return Promise.resolve(uncertain('busy', MESSAGES.stillSending));
     const entry = { selectionId: request.selectionId, promise: undefined as unknown as Promise<SendOutcome> };
     const abandoned = { value: false };
-    entry.promise = withTimeout(run(request, { value: false }, abandoned), abandoned).finally(() => {
+    const issued = { value: false };
+    const underlying = run(request, issued, abandoned);
+    entry.promise = withTimeout(underlying, abandoned, issued, () => {
+      const record = { issued, prompt: request.prompt, run: underlying };
+      outstanding.set(outstandingKey, record);
+      const forget = () => { if (outstanding.get(outstandingKey) === record) outstanding.delete(outstandingKey); };
+      underlying.then(forget, forget);
+    }).finally(() => {
       if (inFlight.get(request.artifactKey) === entry) inFlight.delete(request.artifactKey);
     });
     inFlight.set(request.artifactKey, entry);
@@ -347,6 +363,7 @@ export function createSendCoordinator(options: SendCoordinatorOptions): SendCoor
       }
       slots.clear();
       inFlight.clear();
+      outstanding.clear();
       if (pollTimer !== null) { clock.clearTimeout(pollTimer); pollTimer = null; }
       if (subscription) { subscription.dispose(); subscription = null; }
       // The user was told "Queued"; make the loss visible instead of silent.

@@ -55,6 +55,13 @@ import type {
 export type StoreFsOps = FsOps;
 export const defaultStoreFsOps: StoreFsOps = defaultOps;
 
+/**
+ * PERSISTED: never rename or change. The batch boundary token of every retry that is still pending is derived from
+ * HMAC(installKey, this label), so changing it invalidates every pending retry (they would all become conflicts).
+ * The "threads-design" in the value is deliberate and stays even if the repository or plugin is renamed.
+ */
+export const BATCH_SECRET_LABEL = 'threads-design/batch-boundary/v1';
+
 const COMMENTS_FILE = 'comments.json';
 const PREV_FILE = 'comments.prev.json';
 const TMP_FILE = /^comments\.[0-9a-f]{16}\.tmp$/;
@@ -95,6 +102,13 @@ export interface OpenTarget {
   readonly artifactId: string;
 }
 
+export interface BatchMark {
+  readonly requestId: string | null;
+  readonly promptSha: string | null;
+  /** ISO time of the write-ahead (store clock). */
+  readonly issuedAt: string | null;
+}
+
 export interface SystemTransition {
   readonly id: string;
   readonly event: SystemEvent;
@@ -120,7 +134,7 @@ export interface CommentRootHandle {
   /** Plugin-raised transitions for the send flow (P2b), applied atomically: all or nothing. */
   transition(items: readonly SystemTransition[]): Promise<ArtifactCommentsResult<{ readonly comments: readonly ArtifactComment[]; readonly stale: readonly string[] }>>;
   /** Which batch request last issued each comment and the hash of its prompt (null when none). Internal: the public comment shape does not carry them. */
-  batchMarks(ids: readonly string[]): Promise<ReadonlyMap<string, { readonly requestId: string | null; readonly promptSha: string | null }>>;
+  batchMarks(ids: readonly string[]): Promise<ReadonlyMap<string, BatchMark>>;
   /**
    * The secret the batch boundary token is derived from: an HMAC of a fixed label under the install key. Stable across
    * reloads (so one request id builds one prompt), never the key itself, and never handed to Geode or the page.
@@ -655,17 +669,17 @@ export function createCommentStore(options: CommentStoreOptions): CommentStore {
       });
     }
 
-    batchMarks(ids: readonly string[]): Promise<ReadonlyMap<string, { readonly requestId: string | null; readonly promptSha: string | null }>> {
+    batchMarks(ids: readonly string[]): Promise<ReadonlyMap<string, BatchMark>> {
       return this.locked(async () => {
         const wanted = new Set(ids);
-        const out = new Map<string, { readonly requestId: string | null; readonly promptSha: string | null }>();
-        for (const c of this.state.file.comments) if (wanted.has(c.id)) out.set(c.id, { requestId: c.send.lastBatchRequestId ?? null, promptSha: c.send.lastBatchPromptSha ?? null });
+        const out = new Map<string, BatchMark>();
+        for (const c of this.state.file.comments) if (wanted.has(c.id)) out.set(c.id, { requestId: c.send.lastBatchRequestId ?? null, promptSha: c.send.lastBatchPromptSha ?? null, issuedAt: c.send.lastBatchAt ?? null });
         return out;
       });
     }
 
     async batchSecret(): Promise<string> {
-      return createHmac('sha256', await this.ensureKey()).update('threads-design/batch-boundary/v1').digest('hex');
+      return createHmac('sha256', await this.ensureKey()).update(BATCH_SECRET_LABEL).digest('hex');
     }
 
     protectedSelectionIds(): Promise<string[]> {

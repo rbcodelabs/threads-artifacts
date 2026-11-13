@@ -53,6 +53,8 @@ const MESSAGES = {
   sendingNow: 'This comment is being sent right now, so it cannot be taken back.',
   cancelled: 'This send was cancelled. Choose the comments and send again.',
   settling: 'The previous attempt is still being recorded. Try again in a moment.',
+  maybeSentOld: 'These comments may have been sent earlier. Check the thread, then send them again as a new request if you want a second message.',
+  secretUnavailable: 'Comments cannot be sent right now because the signing key could not be read. Try again in a moment.',
   maybeSentRetry: 'These comments changed since an earlier send that may already be in the thread. Send them again only if you want a second message.',
   notRecorded: 'The message went out, but its status could not be saved, so these comments are marked as maybe sent.',
   changedWhileSending: 'These comments changed while sending, so nothing was sent. Try again.',
@@ -65,6 +67,13 @@ const MESSAGES = {
 
 const LEDGER_SIZE = 64;
 const LEDGER_TTL_MS = 10 * 60 * 1000;
+/**
+ * How long after the write-ahead an identical-prompt retry of a maybe-sent comment may rely on the host to dedupe it
+ * (spike S4, agent-threads src/PublicApi.ts): `persisted.sends` keeps only the last MAX_PERSISTED_RECORDS = 500 runs, within
+ * MAX_PERSISTED_STATE_BYTES = 1 MiB, oldest dropped first, shared by every sender. Retention is bounded by COUNT, not time,
+ * so after a busy period the key may be gone and the retry would be a second message. Beyond this window the user decides.
+ */
+export const MAYBE_SENT_DEDUPE_WINDOW_MS = 15 * 60 * 1000;
 
 export interface CommentsProviderDeps {
   readonly api: Pick<AgentThreadsApiV1, 'threads' | 'artifacts'>;
@@ -354,7 +363,7 @@ export function createArtifactCommentsProvider(deps: CommentsProviderDeps): Comm
    * after the send is over. Returns true when every write that was needed worked the first way.
    */
   async function recordMembers(handle: CommentRootHandle, ids: readonly string[], event: Transition['event'], requestId: string, message: string, fallback: { readonly event: Transition['event']; readonly message: string } | null, maybeSent = false): Promise<boolean> {
-    const item = (id: string, which: Transition['event'], text: string): Transition => ({ id, event: which, ...(which === 'reload-recovered' ? {} : { requestId }), message: text, ...(which === event && event === 'send-failed' && maybeSent ? { maybeSent: true } : {}) });
+    const item = (id: string, which: Transition['event'], text: string): Transition => ({ id, event: which, ...(which === 'reload-recovered' ? {} : { requestId }), message: text, ...(maybeSent && (which === 'send-failed' || which === 'expired') ? { maybeSent: true } : {}) });
     if ((await writeWithRetry(() => handle.transition(ids.map((id) => item(id, event, message))))).status === 'ok') return true;
     for (const id of ids) {
       const written = await writeWithRetry(() => handle.transition([item(id, event, message)]));
@@ -401,7 +410,7 @@ export function createArtifactCommentsProvider(deps: CommentsProviderDeps): Comm
       try {
         const handle = await handleFor(entry.root, entry.artifactId);
         if (outcome.status === 'sent') await recordMembers(handle, entry.memberIds, 'delivered', entry.requestId, MESSAGES.delivered, { event: 'reload-recovered', message: MESSAGES.notRecorded });
-        else if (outcome.status === 'rejected') await recordMembers(handle, entry.memberIds, 'send-failed', entry.requestId, outcome.message, { event: 'expired', message: outcome.message });
+        else if (outcome.status === 'rejected') await recordMembers(handle, entry.memberIds, 'send-failed', entry.requestId, outcome.message, { event: 'expired', message: outcome.message }, outcome.maybeSent === true);
         else if (outcome.status === 'cancelled') for (const id of entry.memberIds) await releaseMember(handle, id, entry.requestId);
       } catch (error) {
         warn('threads-design: could not record how a queued batch ended', error);
@@ -480,9 +489,16 @@ export function createArtifactCommentsProvider(deps: CommentsProviderDeps): Comm
           hints,
         };
       }));
+      let secret: string;
+      try {
+        secret = await handle.batchSecret();
+      } catch (error) {
+        warn('threads-design: the batch secret could not be derived', error);
+        return fail('unavailable', MESSAGES.secretUnavailable);
+      }
       let built;
       try {
-        built = buildBatchPrompt({ items, artifactTitle: intake.title, requestId, boundarySecret: await handle.batchSecret(), artifactRoot: intake.root, escalationKeywords: escalation.keywords, conservativeKeywords: !escalation.known, maxLength: deps.maxPromptLength });
+        built = buildBatchPrompt({ items, artifactTitle: intake.title, requestId, boundarySecret: secret, artifactRoot: intake.root, escalationKeywords: escalation.keywords, conservativeKeywords: !escalation.known, maxLength: deps.maxPromptLength });
       } catch (error) {
         warn('threads-design: could not build the batch prompt', error);
         return fail('failed', MESSAGES.promptUnsafe);
@@ -501,13 +517,18 @@ export function createArtifactCommentsProvider(deps: CommentsProviderDeps): Comm
     // A comment whose earlier attempt under THIS request id may have reached the thread (a timeout, a reload) may only
     // be sent again if the message is byte-identical: it then carries the same idempotency key and the host dedupes it.
     // Anything else (an edited comment, a different set) would be a second message, so the user decides, with a new request.
-    const promptSha = createHash('sha256').update(plan.prompt).digest('hex');
-    const uncertain = plan.includedIds.filter((id) => known.get(id)?.send.maybeSent === true);
-    if (uncertain.length > 0) {
-      const marks = await handle.batchMarks(uncertain);
-      for (const id of uncertain) {
+    // The hash is bound to the thread: the same text sent to another thread is another message.
+    const promptSha = createHash('sha256').update(`${intake.threadId}\n${plan.prompt}`).digest('hex');
+    const maybeSent = plan.includedIds.filter((id) => known.get(id)?.send.maybeSent === true);
+    if (maybeSent.length > 0) {
+      const marks = await handle.batchMarks(maybeSent);
+      for (const id of maybeSent) {
         const mark = marks.get(id);
-        if (mark?.requestId === requestId && mark.promptSha !== promptSha) return fail('conflict', MESSAGES.maybeSentRetry);
+        if (mark?.requestId !== requestId) continue;
+        if (mark.promptSha !== promptSha) return fail('conflict', MESSAGES.maybeSentRetry);
+        const issued = mark.issuedAt === null ? Number.NaN : Date.parse(mark.issuedAt);
+        // Identical, but the host may have forgotten the key by now (S4): outside the window the user decides.
+        if (!Number.isFinite(issued) || now() - issued > MAYBE_SENT_DEDUPE_WINDOW_MS) return fail('conflict', MESSAGES.maybeSentOld);
       }
     }
 
