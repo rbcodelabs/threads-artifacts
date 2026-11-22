@@ -22,6 +22,7 @@ import { normalizeHostTheme, type HostThemeSnapshot } from './hostTheme';
 import { parseDesignModeArgs, type DesignMode } from './designModes';
 import { THREADS_DESIGN_FOLDER_RULE, type DesignGuidance } from './designGuidance';
 import { REPORT_JS, reportCss, reportDataJs, reportHtml } from './reportTemplate';
+import { scaffoldBoardFiles } from './designBoard';
 
 export { DESIGN_ARTIFACT_SCHEMA_VERSION };
 
@@ -67,6 +68,10 @@ export interface DesignArtifact {
   entryPath: string;
   createdAt: number;
   updatedAt: number;
+  /** Absolute path to `board.canvas` when this design is a multi-screen Design Board. */
+  boardPath?: string;
+  /** Vault-relative POSIX path to `board.canvas` for Geode's CanvasView (`type: 'canvas'`). */
+  boardVaultPath?: string;
   lastCapturePath?: string;
   lastExportPath?: string;
 }
@@ -142,13 +147,14 @@ export function parseDesignManifest(raw: unknown): DesignArtifactManifest {
   return m as unknown as DesignArtifactManifest;
 }
 
-function scaffoldHtml(): string {
+function scaffoldHtml(includeTokens = false): string {
+  const tokensLink = includeTokens ? '\n  <link rel="stylesheet" href="tokens.css">' : '';
   return `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Preparing your design</title>
+  <title>Preparing your design</title>${tokensLink}
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -235,6 +241,11 @@ async function scaffoldNextjsFiles(fileFs: DesignArtifactFs, root: string, artif
   await writeIfMissing(fileFs, path.join(root, 'app', 'page.tsx'), NEXTJS_PAGE);
 }
 
+export interface ScaffoldDesignOptions {
+  board?: boolean;
+  vaultRoot?: string;
+}
+
 export async function scaffoldDesignArtifact(
   threadId: string,
   root: string,
@@ -244,16 +255,26 @@ export async function scaffoldDesignArtifact(
   theme: HostThemeSnapshot = normalizeHostTheme('dark', {}),
   runtime: DesignRuntime = 'static',
   mode?: DesignMode,
+  options: ScaffoldDesignOptions = {},
 ): Promise<DesignArtifact> {
   const manifest = buildDesignManifest(threadId, brief, runtime);
   await fileFs.mkdir(root, { recursive: true });
   await writeIfMissing(fileFs, path.join(root, 'artifact.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+  let boardPath: string | undefined;
+  let boardVaultPath: string | undefined;
   if (runtime === 'nextjs') {
     await scaffoldNextjsFiles(fileFs, root, manifest.id);
   } else if (mode === 'report') {
     await writeIfMissing(fileFs, path.join(root, 'index.html'), reportHtml());
     await writeIfMissing(fileFs, path.join(root, 'styles.css'), reportCss(theme));
     await scaffoldReportSupport(fileFs, root);
+  } else if (options.board) {
+    await writeIfMissing(fileFs, path.join(root, 'index.html'), scaffoldHtml(true));
+    await writeIfMissing(fileFs, path.join(root, 'styles.css'), scaffoldCss(theme));
+    await writeIfMissing(fileFs, path.join(root, 'app.js'), SCAFFOLD_JS);
+    const board = await scaffoldBoardFiles(root, fileFs, theme, options.vaultRoot);
+    boardPath = board.boardPath;
+    boardVaultPath = board.boardVaultPath;
   } else {
     await writeIfMissing(fileFs, path.join(root, 'index.html'), scaffoldHtml());
     await writeIfMissing(fileFs, path.join(root, 'styles.css'), scaffoldCss(theme));
@@ -275,6 +296,7 @@ export async function scaffoldDesignArtifact(
     entryPath: path.join(root, manifest.entry),
     createdAt: now,
     updatedAt: now,
+    ...(boardPath ? { boardPath, boardVaultPath } : {}),
   };
   return artifact;
 }
@@ -373,6 +395,15 @@ export function designKickoffMessage(artifact: DesignArtifact, brief: string, mo
     : '- Establish appropriate information architecture, realistic content, clear visual hierarchy, and a distinctive visual direction suited to the brief.';
   const lookupBullet = guidance ? '' : `\n${DESIGN_FILE_LOOKUP_BULLET}`;
   const modeSection = mode ? `${MODE_INSTRUCTIONS[mode]}\n\n` : '';
+  const boardSection = artifact.boardPath
+    ? `Design Board model:
+- This design is a vault-native Design Board at ${artifact.boardPath}, previewed in Geode's CanvasView.
+- Shared design tokens live in tokens.css (linked from index.html and every screens/<name>.html via ../tokens.css). Define palette, typography, radii, and spacing in tokens.css so every artboard stays visually cohesive.
+- The initial artboard (id "artboard-home") renders index.html. To add more screens, breakpoints (desktop 1440×900, tablet 820×1180, mobile 390×844), variants, groups, or flow arrows, call the AddDesignArtboard tool—it scaffolds screens/<slug>.html and places the artboard on board.canvas in a tidy non-overlapping grid.
+- Edit each screen's HTML/CSS/JS directly after adding it.
+
+`
+    : '';
   if (designRuntimeOf(artifact) === 'nextjs') return nextjsKickoffMessage(artifact, brief, mode, guidance);
   return `You are working in Agent Threads Design mode.
 
@@ -388,7 +419,7 @@ ${guidanceSection}Design intent:
 ${directionBullet}
 - Review and refine both desktop and mobile layouts before finishing.${lookupBullet}
 
-${modeSection}Artifact rules:
+${boardSection}${modeSection}Artifact rules:
 - Treat artifact.json as the host contract; do not change its schemaVersion, id, runtime, thread id, or permissions.
 - Build a polished responsive interface using index.html, styles.css, app.js, and local assets only.
 - Use external CSS and JavaScript files. Inline JavaScript is blocked by the artifact CSP.

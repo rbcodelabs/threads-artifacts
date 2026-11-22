@@ -49,6 +49,8 @@ export const DESIGN_PROVIDER_OWNER = Object.freeze({
  * after the plugin id changed to `threads-artifacts`. Do not change this without a migration.
  */
 export const DESIGN_STORAGE_NAMESPACE = 'threads-design';
+/** Visible-storage namespace for multi-screen Design Boards (`Artifacts/threads-artifacts/<slug>/`). */
+export const DESIGN_BOARD_STORAGE_NAMESPACE = DESIGN_PROVIDER_OWNER.pluginId;
 
 export const DESIGN_ACTION_PREVIEW = 'preview';
 export const DESIGN_ACTION_CAPTURE = 'capture';
@@ -94,12 +96,13 @@ function designData(ref: ThreadArtifactRef): DesignArtifact {
 
 export function presentDesignArtifact(ref: ThreadArtifactRef): ArtifactPresentation {
   const isApp = ref.kind === DESIGN_APP_ARTIFACT_KIND;
+  const isBoard = !isApp && Boolean((ref.data as DesignArtifact | undefined)?.boardVaultPath);
   return {
     title: ref.title,
-    subtitle: isApp ? 'Next.js design prototype' : 'Static design artifact',
+    subtitle: isApp ? 'Next.js design prototype' : isBoard ? 'Design board' : 'Static design artifact',
     icon: 'panels-top-left',
     actions: [
-      { id: DESIGN_ACTION_PREVIEW, label: 'Preview design', variant: 'primary', icon: 'eye', shortLabel: 'Preview' },
+      { id: DESIGN_ACTION_PREVIEW, label: isBoard ? 'Open design board' : 'Preview design', variant: 'primary', icon: 'eye', shortLabel: 'Preview' },
       { id: DESIGN_ACTION_CAPTURE, label: 'Capture design screenshot', variant: 'secondary', icon: 'camera' },
       ...(isApp ? [{ id: DESIGN_ACTION_EXPORT, label: 'Export static HTML', tooltip: 'Build a static export and zip it', variant: 'secondary' as const, icon: 'package', shortLabel: 'Export' }] : []),
       { id: DESIGN_ACTION_REVEAL, label: 'Reveal design source', variant: 'secondary', icon: 'folder-open' },
@@ -108,13 +111,12 @@ export function presentDesignArtifact(ref: ThreadArtifactRef): ArtifactPresentat
 }
 
 /**
- * Opens the secure artifact view, falling back to revealing the source when
- * the host cannot place it. Exported because design-mode entry (`/design`,
- * `EnterDesignMode`) needs the same outcome shape immediately after creating
- * an artifact, before any card action has been clicked.
+ * Opens the secure artifact view (or Geode's CanvasView when a multi-screen
+ * `board.canvas` is present), falling back to `geode-artifact` and then to
+ * revealing the source when the host cannot place it.
  */
 export async function previewDesignArtifact(
-  artifact: Pick<DesignArtifact, 'root' | 'manifestPath'>,
+  artifact: Pick<DesignArtifact, 'root' | 'manifestPath' | 'boardVaultPath'>,
   host: ArtifactActionHost,
   /** Dev-server URL for Next.js artifacts; static artifacts load from `root`. */
   url?: string,
@@ -122,6 +124,13 @@ export async function previewDesignArtifact(
   // Obsidian's missing-plugin placeholder preserves the requested view type,
   // so successful placement alone cannot establish that a preview loaded.
   if (typeof geodeHost()?.captureArtifact === 'function') {
+    if (!url && artifact.boardVaultPath) {
+      const boardPlacement = await host.openView({
+        type: 'canvas',
+        state: { file: artifact.boardVaultPath },
+      });
+      if (boardPlacement !== 'unavailable') return { status: 'opened' };
+    }
     const placement = await host.openView({
       type: 'geode-artifact',
       state: url ? { root: artifact.root, url, runtime: 'nextjs' } : { root: artifact.root },

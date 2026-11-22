@@ -1,7 +1,7 @@
 import { Notice, Plugin } from 'obsidian';
 import type { AgentThreadsApiV1, AgentThreadsPlugin } from './contracts';
 import { DesignService } from './DesignService';
-import { createDesignAgentTool } from './designAgentTool';
+import { createAddArtboardAgentTool, createDesignAgentTool } from './designAgentTool';
 import { createDesignArtifactContribution, DESIGN_PROVIDER_OWNER } from './designArtifactProvider';
 import { createDesignSlashCommand } from './designSlashCommand';
 import * as fs from 'node:fs/promises';
@@ -83,10 +83,11 @@ export default class ThreadsArtifactsPlugin extends Plugin {
     }, (message, isError) => new Notice(isError ? message : `Design: ${message}`), () => captureHostTheme(), cwd => loadDesignGuidance(cwd, {
       readFile: target => fs.readFile(target, 'utf8'),
       exists: target => fs.access(target).then(() => true, () => false),
-    }), nextjs?.toolchain);
+    }), nextjs?.toolchain, basePath);
     const registrations = [
       api.extensions.registerArtifactProvider(DESIGN_PROVIDER_OWNER, createDesignArtifactContribution(nextjs?.provider)),
       api.extensions.registerAgentTool(DESIGN_PROVIDER_OWNER, createDesignAgentTool(service)),
+      api.extensions.registerAgentTool(DESIGN_PROVIDER_OWNER, createAddArtboardAgentTool(service)),
       api.extensions.registerSlashCommand(DESIGN_PROVIDER_OWNER, createDesignSlashCommand({
         getState: threadId => service.state(threadId),
         isDesktopFilesystem: () => true,
