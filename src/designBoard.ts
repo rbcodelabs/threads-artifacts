@@ -20,6 +20,8 @@ export interface CanvasFileNode {
   type: 'file';
   file: string;
   subpath?: string;
+  /** Short header text for the artboard (extra JSON Canvas property; ignored by hosts that don't use it). */
+  label?: string;
   x: number;
   y: number;
   width: number;
@@ -200,6 +202,8 @@ export async function scaffoldBoardFiles(
   fileFs: DesignArtifactFs,
   theme: HostThemeSnapshot,
   vaultRoot?: string,
+  /** Short title shown as the first artboard's header label. */
+  title?: string,
 ): Promise<BoardScaffoldResult> {
   const tokensPath = path.join(root, 'tokens.css');
   const boardPath = path.join(root, 'board.canvas');
@@ -215,6 +219,7 @@ export async function scaffoldBoardFiles(
         id: INITIAL_ARTBOARD_ID,
         type: 'file',
         file: manifestVaultPath,
+        ...(title ? { label: title } : {}),
         x: 0,
         y: 0,
         width: ARTBOARD_PRESETS.desktop.width,
@@ -396,6 +401,7 @@ export async function addArtboardToBoard(
     type: 'file',
     file: manifestVaultPath,
     subpath: `#${screenRelativePath}`,
+    label: title,
     x,
     y,
     width,

@@ -4,7 +4,7 @@ import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DesignService } from '../src/DesignService';
 import { createAddArtboardAgentTool, createDesignAgentTool } from '../src/designAgentTool';
-import { designKickoffMessage, type DesignArtifact } from '../src/designArtifact';
+import { buildDesignManifest, designKickoffMessage, shortDesignTitle, type DesignArtifact } from '../src/designArtifact';
 import {
   DESIGN_BOARD_STORAGE_NAMESPACE,
   DESIGN_STORAGE_NAMESPACE,
@@ -275,7 +275,20 @@ describe('Design Board (Phase 2)', () => {
       openView: vi.fn(async (req: { type: string }) => (req.type === 'canvas' ? 'unavailable' : 'tab')),
       revealInFolder: vi.fn(),
     };
-    await expect(previewDesignArtifact(boardArtifact, hostCanvasUnavailable)).resolves.toEqual({ status: 'opened' });
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const fallback = await previewDesignArtifact(boardArtifact, hostCanvasUnavailable);
+    expect(fallback).toMatchObject({ status: 'opened', warning: expect.stringContaining('board.canvas could not open in CanvasView') });
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('board.canvas could not open in CanvasView'));
+
+    // A throwing canvas view also falls back, visibly.
+    const hostCanvasThrows: any = {
+      openView: vi.fn(async (req: { type: string }) => { if (req.type === 'canvas') throw new Error('no such view'); return 'tab'; }),
+      revealInFolder: vi.fn(),
+    };
+    await expect(previewDesignArtifact(boardArtifact, hostCanvasThrows)).resolves.toMatchObject({
+      status: 'opened', warning: expect.stringContaining('no such view'),
+    });
+    warnSpy.mockRestore();
     expect(hostCanvasUnavailable.openView).toHaveBeenNthCalledWith(1, {
       type: 'canvas',
       state: { file: 'Artifacts/threads-artifacts/pricing/board.canvas' },
@@ -322,5 +335,21 @@ describe('Design Board (Phase 2)', () => {
     await expect(
       addArtboardToBoard(root, { name: 'Step 2', fromArtboardId: 'missing-id' }, nodeFs, normalizeHostTheme('dark', {}), vaultDir),
     ).rejects.toThrow('missing-id');
+  });
+});
+
+
+describe('short board titles', () => {
+  it('derives a short first-clause title and caps length', () => {
+    expect(shortDesignTitle('Pricing page: three tiers, a comparison table and an FAQ for the new plan')).toBe('Pricing page');
+    expect(shortDesignTitle('Design a multi-screen onboarding flow for new mobile users of the banking app')).toMatch(/^.{1,48}…$/);
+    expect(shortDesignTitle('Dashboard')).toBe('Dashboard');
+    expect(shortDesignTitle('')).toBe('Design artifact');
+  });
+
+  it('keeps full titles for single-screen manifests and shortens for boards', () => {
+    const brief = 'Settings screen, with profile, billing and notification sections for the app';
+    expect(buildDesignManifest('t', brief).title).toBe(brief);
+    expect(buildDesignManifest('t', brief, 'static', { shortTitle: true }).title).toBe('Settings screen');
   });
 });

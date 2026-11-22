@@ -104,11 +104,29 @@ export function designTitle(brief: string): string {
   return firstLine.length <= 120 ? firstLine : `${firstLine.slice(0, 117)}…`;
 }
 
-export function buildDesignManifest(threadId: string, brief: string, runtime: DesignRuntime = 'static'): DesignArtifactManifest {
+const SHORT_TITLE_MAX = 48;
+
+/**
+ * Short, header-sized title derived from a brief: the first clause (up to the first
+ * sentence/colon/dash/comma break), capped at a word boundary. Used for multi-screen
+ * boards, whose artboard headers would otherwise show the entire brief sentence.
+ */
+export function shortDesignTitle(brief: string): string {
+  const full = designTitle(brief);
+  if (full === 'Design artifact') return full;
+  const clause = full.split(/[.:;!?,–—]\s|\s[-–—]\s|[.:;!?]$/, 1)[0].trim() || full;
+  if (clause.length <= SHORT_TITLE_MAX) return clause;
+  const cut = clause.slice(0, SHORT_TITLE_MAX + 1);
+  const space = cut.lastIndexOf(' ');
+  const base = (space > 16 ? cut.slice(0, space) : clause.slice(0, SHORT_TITLE_MAX)).replace(/[\s,;:-]+$/, '');
+  return `${base}…`;
+}
+
+export function buildDesignManifest(threadId: string, brief: string, runtime: DesignRuntime = 'static', options: { shortTitle?: boolean } = {}): DesignArtifactManifest {
   return {
     schemaVersion: DESIGN_ARTIFACT_SCHEMA_VERSION,
     id: artifactIdForThread(threadId),
-    title: designTitle(brief),
+    title: options.shortTitle ? shortDesignTitle(brief) : designTitle(brief),
     entry: runtime === 'nextjs' ? 'app/page.tsx' : 'index.html',
     runtime,
     createdByThreadId: threadId,
@@ -257,7 +275,7 @@ export async function scaffoldDesignArtifact(
   mode?: DesignMode,
   options: ScaffoldDesignOptions = {},
 ): Promise<DesignArtifact> {
-  const manifest = buildDesignManifest(threadId, brief, runtime);
+  const manifest = buildDesignManifest(threadId, brief, runtime, { shortTitle: Boolean(options.board) });
   await fileFs.mkdir(root, { recursive: true });
   await writeIfMissing(fileFs, path.join(root, 'artifact.json'), `${JSON.stringify(manifest, null, 2)}\n`);
   let boardPath: string | undefined;
@@ -272,7 +290,7 @@ export async function scaffoldDesignArtifact(
     await writeIfMissing(fileFs, path.join(root, 'index.html'), scaffoldHtml(true));
     await writeIfMissing(fileFs, path.join(root, 'styles.css'), scaffoldCss(theme));
     await writeIfMissing(fileFs, path.join(root, 'app.js'), SCAFFOLD_JS);
-    const board = await scaffoldBoardFiles(root, fileFs, theme, options.vaultRoot);
+    const board = await scaffoldBoardFiles(root, fileFs, theme, options.vaultRoot, manifest.title);
     boardPath = board.boardPath;
     boardVaultPath = board.boardVaultPath;
   } else {
