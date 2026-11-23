@@ -16,10 +16,17 @@ import {
   DESIGN_ACTION_PREVIEW,
   DESIGN_ARTIFACT_KINDS,
   DESIGN_ARTIFACT_SCHEMA_VERSION,
+  DESIGN_BOARD_STORAGE_NAMESPACE,
   DESIGN_PROVIDER_ID,
   DESIGN_PROVIDER_OWNER,
   DESIGN_STORAGE_NAMESPACE,
 } from './designArtifactProvider';
+import {
+  addArtboardToBoard,
+  isMultiScreenRequest,
+  type AddArtboardInput,
+  type AddedArtboardResult,
+} from './designBoard';
 import type { DesignGuidance, DesignGuidanceReader } from './designGuidance';
 import type { DesignMode } from './designModes';
 import { designFolderName } from './designStorage';
@@ -35,6 +42,8 @@ export interface PrepareDesignOptions {
   checkPermissions?: boolean;
   /** Runtime for a new artifact; for an existing one it must match or be omitted. */
   runtime?: DesignRuntime;
+  /** Explicitly opt in/out of creating a multi-screen Design Board (`board.canvas`). */
+  board?: boolean;
 }
 
 export interface PreparedDesign {
@@ -56,6 +65,8 @@ export class DesignService {
     private readonly readGuidance?: DesignGuidanceReader,
     /** Absent when the Next.js runtime is unavailable (for example no resolvable cache directory). */
     private readonly nextjs?: NextjsDependencies,
+    /** Vault root directory for computing vault-relative board.canvas paths. */
+    private readonly vaultRoot?: string,
   ) {}
 
   /** Best-effort DESIGN.md lookup; never throws. */
@@ -80,14 +91,9 @@ export class DesignService {
     return { hasArtifacts: !!ref, existingTitle: ref?.title };
   }
 
-  async prepare(threadId: string, brief: string, { mode, checkPermissions = true, runtime }: PrepareDesignOptions = {}): Promise<PreparedDesign> {
+  async prepare(threadId: string, brief: string, { mode, checkPermissions = true, runtime, board }: PrepareDesignOptions = {}): Promise<PreparedDesign> {
     if (checkPermissions) {
-      const permissions = await this.api.threads.permissions(threadId);
-      if (!permissions) throw new Error('Calling thread is unavailable.');
-      if (permissions.planApprovalPending) throw new Error('Design mode is unavailable while plan approval is pending.');
-      if (permissions.effectivePermissionMode === 'plan') {
-        throw new Error('Design mode writes artifact files and is unavailable in read-only Plan mode.');
-      }
+      await this.assertWritablePermissions(threadId);
     }
 
     const existing = (await this.api.artifacts.list(threadId)).find(isDesignRef);
@@ -114,16 +120,29 @@ export class DesignService {
         if (!updated.success) throw new Error(updated.message ?? 'Could not update design artifact.');
       } else {
         const artifactId = artifactIdForThread(threadId);
+        const useBoard = effectiveRuntime === 'static' && mode !== 'report' && isMultiScreenRequest(brief, board);
         // Folder name is only a readable label; identity is the artifact id / createdByThreadId.
-        // Hosts without visible storage ignore the options and return the hidden path, which we use as-is.
+        // Multi-screen boards allocate under Artifacts/threads-artifacts/<slug>/; single-screen
+        // designs keep the legacy threads-design namespace. Hosts without visible storage ignore
+        // the options and return the hidden path, which we use as-is.
         const allocation = await this.api.artifacts.allocateStorage(threadId, artifactId, {
           location: 'visible',
           folderName: designFolderName(designTitle(brief), artifactId),
-          owner: { pluginId: DESIGN_STORAGE_NAMESPACE },
+          owner: { pluginId: useBoard ? DESIGN_BOARD_STORAGE_NAMESPACE : DESIGN_STORAGE_NAMESPACE },
         });
         if (!allocation.success) throw new Error(allocation.message);
         allocatedRoot = allocation.path;
-        artifact = await scaffoldDesignArtifact(threadId, allocation.path, brief, Date.now(), this.fileFs, this.provideTheme(), effectiveRuntime, mode);
+        artifact = await scaffoldDesignArtifact(
+          threadId,
+          allocation.path,
+          brief,
+          Date.now(),
+          this.fileFs,
+          this.provideTheme(),
+          effectiveRuntime,
+          mode,
+          { board: useBoard, vaultRoot: this.vaultRoot },
+        );
         if (effectiveRuntime === 'nextjs') await this.nextjs!.ensureDependencies(allocation.path);
         const ref: ThreadArtifactRef = {
           providerId: DESIGN_PROVIDER_ID,
@@ -181,6 +200,38 @@ export class DesignService {
       this.pending.delete(handle);
       throw error;
     }
+  }
+
+  private async assertWritablePermissions(threadId: string): Promise<void> {
+    const permissions = await this.api.threads.permissions(threadId);
+    if (!permissions) throw new Error('Calling thread is unavailable.');
+    if (permissions.planApprovalPending) throw new Error('Design mode is unavailable while plan approval is pending.');
+    if (permissions.effectivePermissionMode === 'plan') {
+      throw new Error('Design mode writes artifact files and is unavailable in read-only Plan mode.');
+    }
+  }
+
+  /** Appends a new screen artboard to the thread's static design board (upgrading to a board if needed). */
+  async addArtboard(threadId: string, input: AddArtboardInput): Promise<AddedArtboardResult> {
+    await this.assertWritablePermissions(threadId);
+    const existing = (await this.api.artifacts.list(threadId)).find(isDesignRef);
+    if (!existing) {
+      throw new Error('This thread has no design artifact yet. Call EnterDesignMode first before adding artboards.');
+    }
+    const artifact = existing.data as DesignArtifact;
+    if (designRuntimeOf(artifact) !== 'static') {
+      throw new Error('AddDesignArtboard is only available for static design boards, not Next.js prototypes.');
+    }
+    const added = await addArtboardToBoard(artifact.root, input, this.fileFs, this.provideTheme(), this.vaultRoot);
+    const updatedArtifact: DesignArtifact = {
+      ...artifact,
+      boardPath: added.boardPath,
+      boardVaultPath: added.boardVaultPath,
+      updatedAt: Date.now(),
+    };
+    const updated = await this.api.artifacts.update(DESIGN_PROVIDER_OWNER, threadId, existing.id, { data: updatedArtifact });
+    if (!updated.success) throw new Error(updated.message ?? 'Could not update design board metadata.');
+    return added;
   }
 
   async dispose(): Promise<void> {

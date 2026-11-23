@@ -1,6 +1,7 @@
 import type { AgentToolContribution } from './contracts';
 import type { DesignService } from './DesignService';
 import { DESIGN_RUNTIMES, isDesignRuntime, type DesignRuntime } from './designArtifact';
+import { ARTBOARD_PRESETS, isArtboardPreset, type ArtboardPreset } from './designBoard';
 import { DESIGN_MODES, DESIGN_MODE_DESCRIPTIONS, PICK_LETTER_ERROR, PICK_WITHOUT_DESIGN_ERROR, SPEC_WITHOUT_DESIGN_ERROR, isDesignMode, pickLetter } from './designModes';
 
 const failure = (text: string) => ({ content: [{ type: 'text' as const, text }], isError: true });
@@ -37,6 +38,10 @@ export function createDesignAgentTool(service: DesignService): AgentToolContribu
           default: 'static',
           description: 'Artifact runtime: "static" HTML/CSS/JS (default) or "nextjs" for a full multi-page app prototype.',
         },
+        board: {
+          type: 'boolean',
+          description: 'Set true to scaffold a multi-screen Design Board (board.canvas + shared tokens.css + screens/). Omit to auto-detect from the brief; single-screen designs remain single-page.',
+        },
       },
       required: ['brief'],
       additionalProperties: false,
@@ -55,11 +60,68 @@ export function createDesignAgentTool(service: DesignService): AgentToolContribu
         if (!isDesignRuntime(args.runtime)) return failure(`Unsupported runtime ${JSON.stringify(args.runtime)}. Use "static" or "nextjs".`);
         runtime = args.runtime;
       }
+      let board: boolean | undefined;
+      if (args.board !== undefined) {
+        if (typeof args.board !== 'boolean') return failure('board must be a boolean.');
+        board = args.board;
+      }
       if (mode === 'pick' && !pickLetter(brief)) return failure(PICK_LETTER_ERROR);
       try {
         if (mode === 'pick' && !(await service.state(threadId))?.hasArtifacts) return failure(PICK_WITHOUT_DESIGN_ERROR);
         if (mode === 'spec' && !(await service.state(threadId))?.hasArtifacts) return failure(SPEC_WITHOUT_DESIGN_ERROR);
-        const result = await service.prepare(threadId, brief, { mode, runtime });
+        const result = await service.prepare(threadId, brief, { mode, runtime, board });
+        return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+      } catch (error) {
+        return failure(error instanceof Error ? error.message : String(error));
+      }
+    },
+  };
+}
+
+const PRESET_LIST = Object.keys(ARTBOARD_PRESETS) as ArtboardPreset[];
+
+export function createAddArtboardAgentTool(service: DesignService): AgentToolContribution {
+  return {
+    name: 'AddDesignArtboard',
+    description: 'Append a new screen or variant artboard (screens/<slug>.html) to the thread\'s Design Board (board.canvas) with tidy non-overlapping grid placement, device presets (desktop, tablet, mobile), optional group, and optional flow arrow edge. The scaffolded screen links ../tokens.css, ../styles.css and the shared external script ../app.js; put interactivity in external script files loaded via <script src> (no inline handlers or inline <script>, which the artifact CSP blocks).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', minLength: 1, description: 'Human-readable screen or variant name, e.g. "Mobile Checkout" or "Hero Variant B".' },
+        preset: {
+          type: 'string',
+          enum: PRESET_LIST,
+          default: 'desktop',
+          description: 'Device viewport preset: "desktop" (1440×900), "tablet" (820×1180), or "mobile" (390×844).',
+        },
+        width: { type: 'integer', minimum: 240, maximum: 3840, description: 'Optional custom width in px (overrides preset).' },
+        height: { type: 'integer', minimum: 240, maximum: 3840, description: 'Optional custom height in px (overrides preset).' },
+        group: { type: 'string', description: 'Optional canvas group label to place this artboard inside.' },
+        fromArtboardId: { type: 'string', description: 'Optional existing artboard node id (e.g. "artboard-home") to draw a flow arrow from.' },
+        edgeLabel: { type: 'string', description: 'Optional label for the flow arrow edge (used when fromArtboardId is set).' },
+      },
+      required: ['name'],
+      additionalProperties: false,
+    },
+    alwaysLoad: true,
+    requiresApproval: false,
+    async invoke(threadId, args) {
+      const name = typeof args.name === 'string' ? args.name.trim() : '';
+      if (!name) return failure('A non-empty artboard name is required.');
+      let preset: ArtboardPreset | undefined;
+      if (args.preset !== undefined) {
+        if (!isArtboardPreset(args.preset)) {
+          return failure(`Unsupported preset ${JSON.stringify(args.preset)}. Use one of: ${PRESET_LIST.join(', ')}.`);
+        }
+        preset = args.preset;
+      }
+      const width = typeof args.width === 'number' ? args.width : undefined;
+      const height = typeof args.height === 'number' ? args.height : undefined;
+      const group = typeof args.group === 'string' ? args.group : undefined;
+      const fromArtboardId = typeof args.fromArtboardId === 'string' ? args.fromArtboardId : undefined;
+      const edgeLabel = typeof args.edgeLabel === 'string' ? args.edgeLabel : undefined;
+      try {
+        const result = await service.addArtboard(threadId, { name, preset, width, height, group, fromArtboardId, edgeLabel });
         return { content: [{ type: 'text', text: JSON.stringify(result) }] };
       } catch (error) {
         return failure(error instanceof Error ? error.message : String(error));

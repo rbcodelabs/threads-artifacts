@@ -22,6 +22,7 @@ import { normalizeHostTheme, type HostThemeSnapshot } from './hostTheme';
 import { parseDesignModeArgs, type DesignMode } from './designModes';
 import { THREADS_DESIGN_FOLDER_RULE, type DesignGuidance } from './designGuidance';
 import { REPORT_JS, reportCss, reportDataJs, reportHtml } from './reportTemplate';
+import { scaffoldBoardFiles } from './designBoard';
 
 export { DESIGN_ARTIFACT_SCHEMA_VERSION };
 
@@ -67,6 +68,10 @@ export interface DesignArtifact {
   entryPath: string;
   createdAt: number;
   updatedAt: number;
+  /** Absolute path to `board.canvas` when this design is a multi-screen Design Board. */
+  boardPath?: string;
+  /** Vault-relative POSIX path to `board.canvas` for Geode's CanvasView (`type: 'canvas'`). */
+  boardVaultPath?: string;
   lastCapturePath?: string;
   lastExportPath?: string;
 }
@@ -99,11 +104,29 @@ export function designTitle(brief: string): string {
   return firstLine.length <= 120 ? firstLine : `${firstLine.slice(0, 117)}…`;
 }
 
-export function buildDesignManifest(threadId: string, brief: string, runtime: DesignRuntime = 'static'): DesignArtifactManifest {
+const SHORT_TITLE_MAX = 48;
+
+/**
+ * Short, header-sized title derived from a brief: the first clause (up to the first
+ * sentence/colon/dash/comma break), capped at a word boundary. Used for multi-screen
+ * boards, whose artboard headers would otherwise show the entire brief sentence.
+ */
+export function shortDesignTitle(brief: string): string {
+  const full = designTitle(brief);
+  if (full === 'Design artifact') return full;
+  const clause = full.split(/[.:;!?,–—]\s|\s[-–—]\s|[.:;!?]$/, 1)[0].trim() || full;
+  if (clause.length <= SHORT_TITLE_MAX) return clause;
+  const cut = clause.slice(0, SHORT_TITLE_MAX + 1);
+  const space = cut.lastIndexOf(' ');
+  const base = (space > 16 ? cut.slice(0, space) : clause.slice(0, SHORT_TITLE_MAX)).replace(/[\s,;:-]+$/, '');
+  return `${base}…`;
+}
+
+export function buildDesignManifest(threadId: string, brief: string, runtime: DesignRuntime = 'static', options: { shortTitle?: boolean } = {}): DesignArtifactManifest {
   return {
     schemaVersion: DESIGN_ARTIFACT_SCHEMA_VERSION,
     id: artifactIdForThread(threadId),
-    title: designTitle(brief),
+    title: options.shortTitle ? shortDesignTitle(brief) : designTitle(brief),
     entry: runtime === 'nextjs' ? 'app/page.tsx' : 'index.html',
     runtime,
     createdByThreadId: threadId,
@@ -142,13 +165,14 @@ export function parseDesignManifest(raw: unknown): DesignArtifactManifest {
   return m as unknown as DesignArtifactManifest;
 }
 
-function scaffoldHtml(): string {
+function scaffoldHtml(includeTokens = false): string {
+  const tokensLink = includeTokens ? '\n  <link rel="stylesheet" href="tokens.css">' : '';
   return `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Preparing your design</title>
+  <title>Preparing your design</title>${tokensLink}
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -235,6 +259,11 @@ async function scaffoldNextjsFiles(fileFs: DesignArtifactFs, root: string, artif
   await writeIfMissing(fileFs, path.join(root, 'app', 'page.tsx'), NEXTJS_PAGE);
 }
 
+export interface ScaffoldDesignOptions {
+  board?: boolean;
+  vaultRoot?: string;
+}
+
 export async function scaffoldDesignArtifact(
   threadId: string,
   root: string,
@@ -244,16 +273,26 @@ export async function scaffoldDesignArtifact(
   theme: HostThemeSnapshot = normalizeHostTheme('dark', {}),
   runtime: DesignRuntime = 'static',
   mode?: DesignMode,
+  options: ScaffoldDesignOptions = {},
 ): Promise<DesignArtifact> {
-  const manifest = buildDesignManifest(threadId, brief, runtime);
+  const manifest = buildDesignManifest(threadId, brief, runtime, { shortTitle: Boolean(options.board) });
   await fileFs.mkdir(root, { recursive: true });
   await writeIfMissing(fileFs, path.join(root, 'artifact.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+  let boardPath: string | undefined;
+  let boardVaultPath: string | undefined;
   if (runtime === 'nextjs') {
     await scaffoldNextjsFiles(fileFs, root, manifest.id);
   } else if (mode === 'report') {
     await writeIfMissing(fileFs, path.join(root, 'index.html'), reportHtml());
     await writeIfMissing(fileFs, path.join(root, 'styles.css'), reportCss(theme));
     await scaffoldReportSupport(fileFs, root);
+  } else if (options.board) {
+    await writeIfMissing(fileFs, path.join(root, 'index.html'), scaffoldHtml(true));
+    await writeIfMissing(fileFs, path.join(root, 'styles.css'), scaffoldCss(theme));
+    await writeIfMissing(fileFs, path.join(root, 'app.js'), SCAFFOLD_JS);
+    const board = await scaffoldBoardFiles(root, fileFs, theme, options.vaultRoot, manifest.title);
+    boardPath = board.boardPath;
+    boardVaultPath = board.boardVaultPath;
   } else {
     await writeIfMissing(fileFs, path.join(root, 'index.html'), scaffoldHtml());
     await writeIfMissing(fileFs, path.join(root, 'styles.css'), scaffoldCss(theme));
@@ -275,6 +314,7 @@ export async function scaffoldDesignArtifact(
     entryPath: path.join(root, manifest.entry),
     createdAt: now,
     updatedAt: now,
+    ...(boardPath ? { boardPath, boardVaultPath } : {}),
   };
   return artifact;
 }
@@ -373,6 +413,16 @@ export function designKickoffMessage(artifact: DesignArtifact, brief: string, mo
     : '- Establish appropriate information architecture, realistic content, clear visual hierarchy, and a distinctive visual direction suited to the brief.';
   const lookupBullet = guidance ? '' : `\n${DESIGN_FILE_LOOKUP_BULLET}`;
   const modeSection = mode ? `${MODE_INSTRUCTIONS[mode]}\n\n` : '';
+  const boardSection = artifact.boardPath
+    ? `Design Board model:
+- This design is a vault-native Design Board at ${artifact.boardPath}, previewed in Geode's CanvasView.
+- Shared design tokens live in tokens.css (linked from index.html and every screens/<name>.html via ../tokens.css). Define palette, typography, radii, and spacing in tokens.css so every artboard stays visually cohesive.
+- The initial artboard (id "artboard-home") renders index.html. To add more screens, breakpoints (desktop 1440×900, tablet 820×1180, mobile 390×844), variants, groups, or flow arrows, call the AddDesignArtboard tool—it scaffolds screens/<slug>.html and places the artboard on board.canvas in a tidy non-overlapping grid.
+- Edit each screen's HTML/CSS/JS directly after adding it.
+- Interactivity on every screen (screens/*.html as well as index.html): the artifact CSP only allows scripts loaded from files (script-src artifact:). Never use inline event handlers (onclick, onchange, onsubmit and similar attributes) or inline <script> blocks; they do nothing and leave dead buttons. Put behavior in external files (the shared app.js at the artifact root, or a per-screen script file under the artifact root) and load them with <script src>, e.g. <script src="../app.js"></script> from a screen. Attach handlers with addEventListener, using data-* attributes or ids as hooks.
+
+`
+    : '';
   if (designRuntimeOf(artifact) === 'nextjs') return nextjsKickoffMessage(artifact, brief, mode, guidance);
   return `You are working in Agent Threads Design mode.
 
@@ -388,10 +438,10 @@ ${guidanceSection}Design intent:
 ${directionBullet}
 - Review and refine both desktop and mobile layouts before finishing.${lookupBullet}
 
-${modeSection}Artifact rules:
+${boardSection}${modeSection}Artifact rules:
 - Treat artifact.json as the host contract; do not change its schemaVersion, id, runtime, thread id, or permissions.
 - Build a polished responsive interface using index.html, styles.css, app.js, and local assets only.
-- Use external CSS and JavaScript files. Inline JavaScript is blocked by the artifact CSP.
+- Use external CSS and JavaScript files. Inline JavaScript is blocked by the artifact CSP (it only allows scripts loaded from files, script-src artifact:), so inline <script> blocks and inline event handlers (onclick and similar attributes) do nothing: wire every interaction with addEventListener from an external script loaded via <script src>.
 - Do not install packages, start a server, load remote fonts, call network APIs, submit forms, or request clipboard access.
 - Keep every asset beneath the artifact root and use relative paths.
 - Preserve accessibility: semantic landmarks, keyboard operation, labels, focus states, and sufficient contrast.
