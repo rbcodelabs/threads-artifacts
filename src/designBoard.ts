@@ -162,6 +162,9 @@ export function scaffoldTokensCss(theme: HostThemeSnapshot): string {
 `;
 }
 
+/** Shared external script every screen links via ../app.js. Artifact pages run under script-src artifact:, so inline scripts and handlers never run. */
+export const BOARD_SHARED_SCRIPT = `document.documentElement.dataset.artifactReady = 'true';\n`;
+
 export function screenScaffoldHtml(title: string): string {
   const safeTitle = title
     .replace(/&/g, '&amp;')
@@ -212,6 +215,7 @@ export async function scaffoldBoardFiles(
 
   await fileFs.mkdir(path.join(root, 'screens'), { recursive: true });
   await writeIfMissing(fileFs, tokensPath, scaffoldTokensCss(theme));
+  await writeIfMissing(fileFs, path.join(root, 'app.js'), BOARD_SHARED_SCRIPT);
 
   const initialCanvas: CanvasDocument = {
     nodes: [
@@ -391,6 +395,7 @@ export async function addArtboardToBoard(
 
   await fileFs.mkdir(path.join(root, 'screens'), { recursive: true });
   await writeIfMissing(fileFs, path.join(root, 'tokens.css'), scaffoldTokensCss(theme));
+  await writeIfMissing(fileFs, path.join(root, 'app.js'), BOARD_SHARED_SCRIPT);
   await writeIfMissing(fileFs, screenPath, screenScaffoldHtml(title));
 
   const { width, height } = resolveArtboardDimensions(input);

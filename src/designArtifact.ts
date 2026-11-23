@@ -419,6 +419,7 @@ export function designKickoffMessage(artifact: DesignArtifact, brief: string, mo
 - Shared design tokens live in tokens.css (linked from index.html and every screens/<name>.html via ../tokens.css). Define palette, typography, radii, and spacing in tokens.css so every artboard stays visually cohesive.
 - The initial artboard (id "artboard-home") renders index.html. To add more screens, breakpoints (desktop 1440×900, tablet 820×1180, mobile 390×844), variants, groups, or flow arrows, call the AddDesignArtboard tool—it scaffolds screens/<slug>.html and places the artboard on board.canvas in a tidy non-overlapping grid.
 - Edit each screen's HTML/CSS/JS directly after adding it.
+- Interactivity on every screen (screens/*.html as well as index.html): the artifact CSP only allows scripts loaded from files (script-src artifact:). Never use inline event handlers (onclick, onchange, onsubmit and similar attributes) or inline <script> blocks; they do nothing and leave dead buttons. Put behavior in external files (the shared app.js at the artifact root, or a per-screen script file under the artifact root) and load them with <script src>, e.g. <script src="../app.js"></script> from a screen. Attach handlers with addEventListener, using data-* attributes or ids as hooks.
 
 `
     : '';
@@ -440,7 +441,7 @@ ${directionBullet}
 ${boardSection}${modeSection}Artifact rules:
 - Treat artifact.json as the host contract; do not change its schemaVersion, id, runtime, thread id, or permissions.
 - Build a polished responsive interface using index.html, styles.css, app.js, and local assets only.
-- Use external CSS and JavaScript files. Inline JavaScript is blocked by the artifact CSP.
+- Use external CSS and JavaScript files. The artifact CSP only allows scripts loaded from files (script-src artifact:), so inline <script> blocks and inline event handlers (onclick and similar attributes) do nothing: wire every interaction with addEventListener from an external script loaded via <script src>.
 - Do not install packages, start a server, load remote fonts, call network APIs, submit forms, or request clipboard access.
 - Keep every asset beneath the artifact root and use relative paths.
 - Preserve accessibility: semantic landmarks, keyboard operation, labels, focus states, and sufficient contrast.

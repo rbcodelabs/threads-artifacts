@@ -83,7 +83,7 @@ const PRESET_LIST = Object.keys(ARTBOARD_PRESETS) as ArtboardPreset[];
 export function createAddArtboardAgentTool(service: DesignService): AgentToolContribution {
   return {
     name: 'AddDesignArtboard',
-    description: 'Append a new screen or variant artboard (screens/<slug>.html) to the thread\'s Design Board (board.canvas) with tidy non-overlapping grid placement, device presets (desktop, tablet, mobile), optional group, and optional flow arrow edge.',
+    description: 'Append a new screen or variant artboard (screens/<slug>.html) to the thread\'s Design Board (board.canvas) with tidy non-overlapping grid placement, device presets (desktop, tablet, mobile), optional group, and optional flow arrow edge. The scaffolded screen links ../tokens.css, ../styles.css and the shared external script ../app.js; put interactivity in external script files loaded via <script src> (no inline handlers or inline <script>, which the artifact CSP blocks).',
     inputSchema: {
       type: 'object',
       properties: {
