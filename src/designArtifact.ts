@@ -441,7 +441,7 @@ ${directionBullet}
 ${boardSection}${modeSection}Artifact rules:
 - Treat artifact.json as the host contract; do not change its schemaVersion, id, runtime, thread id, or permissions.
 - Build a polished responsive interface using index.html, styles.css, app.js, and local assets only.
-- Use external CSS and JavaScript files. The artifact CSP only allows scripts loaded from files (script-src artifact:), so inline <script> blocks and inline event handlers (onclick and similar attributes) do nothing: wire every interaction with addEventListener from an external script loaded via <script src>.
+- Use external CSS and JavaScript files. Inline JavaScript is blocked by the artifact CSP (it only allows scripts loaded from files, script-src artifact:), so inline <script> blocks and inline event handlers (onclick and similar attributes) do nothing: wire every interaction with addEventListener from an external script loaded via <script src>.
 - Do not install packages, start a server, load remote fonts, call network APIs, submit forms, or request clipboard access.
 - Keep every asset beneath the artifact root and use relative paths.
 - Preserve accessibility: semantic landmarks, keyboard operation, labels, focus states, and sufficient contrast.
